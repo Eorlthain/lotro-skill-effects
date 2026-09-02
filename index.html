@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOTRO Skills and Effects</title>
+<link rel="stylesheet" href="style.css?v=4">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <h1>LOTRO Skills and Effects</h1>
+      <a class="navlink" href="#/classes">Browse by class</a>
+      <div class="sub" id="meta">loading...</div>
+    </div>
+    <div class="controls">
+      <input class="search" id="q" type="search" placeholder="Search skills and effects" autocomplete="off" autofocus>
+      <div class="filters">
+        <button id="fSkill" class="on" data-t="s">Skills</button>
+        <button id="fEffect" class="on" data-t="e">Effects</button>
+        <button id="fClass" class="on" data-t="c">Classes</button>
+        <select id="fCat"><option value="">Any category</option></select>
+      </div>
+      <div class="count" id="count"></div>
+    </div>
+    <div class="results" id="results"></div>
+  </aside>
+  <main class="detail" id="detail">
+    <div class="empty" id="landing">
+      <h2>Every skill, and how you get it</h2>
+      <p>Look up any skill to see its cooldown, range, damage and cost, and
+      every effect it puts on you or your target. Effects link through to their
+      own pages, so you can follow a buff back to the skills that cast it.</p>
+      <p>Pick a class below for the full list of what you train at each level,
+      and which trait in your tree unlocks the rest.</p>
+    </div>
+  </main>
+</div>
+<script src="app.js?v=4"></script>
+</body>
+</html>
