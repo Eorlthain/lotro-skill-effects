@@ -122,6 +122,9 @@ h3.sec {
 }
 .stat .k { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
 .stat .v { font: 600 17px var(--mono); color: var(--ink); margin-top: 2px; }
+/* a stat cell holding a run of links rather than one number */
+.stat.wide { flex-basis: 100%; }
+.stat.wide .v { font: 400 13px var(--sans); line-height: 1.55; }
 
 table.t { border-collapse: collapse; width: 100%; max-width: 900px; font-size: 13px; }
 table.t th {
@@ -135,7 +138,7 @@ table.t td.num { font-family: var(--mono); }
 ul.links { list-style: none; margin: 0; padding: 0; }
 ul.links li { padding: 4px 0; display: flex; gap: 8px; align-items: center; }
 ul.links img { width: 22px; height: 22px; border-radius: 3px; background: var(--surface-2); }
-ul.links .via { color: var(--ink-3); font: 11px var(--mono); }
+ul.links .via { color: var(--ink-3); font: 11px var(--mono); margin-left: 8px; }
 
 .chart { margin: 6px 0 4px; }
 .chart svg { display: block; overflow: visible; }
@@ -188,3 +191,34 @@ table.t img.inline {
 
 a.eff { color: var(--info); }
 table.t td .via { margin-left: 8px; }
+
+.setbonus { margin: 8px 0 0 14px; padding-left: 12px; border-left: 1px solid var(--border); }
+.setbonus .sbh {
+  font: 600 11px var(--sans); letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 2px;
+}
+a.more { font-size: 11.5px; color: var(--link); white-space: nowrap; }
+a.more:hover { color: var(--accent); }
+
+a.trc { color: #c9a0dc; }
+.band { font: 11.5px var(--mono); color: var(--ink-2); border-bottom: 1px dotted var(--border-strong); }
+/* Item quality colours, as the game uses them. Kept as tokens so a single
+   line changes each one everywhere it appears. */
+:root {
+  --rar-uncommon:     #FFFF00;
+  --rar-rare:         #8B008B;
+  --rar-incomparable: #00FFFF;
+  --rar-legendary:    #FFA500;
+}
+td.rar-uncommon     { color: var(--rar-uncommon); }
+td.rar-rare         { color: var(--rar-rare); }
+td.rar-incomparable { color: var(--rar-incomparable); }
+td.rar-legendary    { color: var(--rar-legendary); }
+td[class^="rar-"]   { font-weight: 600; }
+
+ul.links li.twoline { align-items: flex-start; }
+.trline { font-size: 11.5px; margin-top: 1px; }
+
+a.ess { color: #86b06b; }
+
+.tag.slot { border-color: var(--accent-dim); color: var(--ink); }

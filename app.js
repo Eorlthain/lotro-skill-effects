@@ -42,6 +42,22 @@ function sideFile(name) {
 }
 function modSources() { return sideFile("modSources"); }
 
+var TRACERY_OF = null;
+function effectTraceries() { return sideFile("effectTraceries"); }
+
+function traceryData() {
+  return sideFile("traceries").then(function (T) {
+    if (!TRACERY_OF) {
+      // any of a tracery's 36 item ids should land on the family page
+      TRACERY_OF = {};
+      Object.keys(T).forEach(function (fid) {
+        (T[fid].members || []).forEach(function (m) { TRACERY_OF[m] = fid; });
+      });
+    }
+    return T;
+  });
+}
+
 function classData() {
   return Promise.all([sideFile("classes"), sideFile("traits"), sideFile("traitTrees")])
     .then(function (r) { return { classes: r[0], traits: r[1], trees: r[2] }; });
@@ -126,11 +142,17 @@ function titleCase(s) {
 
 /* ---------------- search ---------------- */
 
-var typeOn = { s: true, e: true, c: true };
+var typeOn = { s: true, e: true, c: true, y: true, z: true };
 var catFilter = "";
 
-function score(name, q) {
-  var n = name.toLowerCase();
+/* "Fleche" should find "Fleche" with the accent. Strip combining marks so the
+   comparison ignores diacritics entirely. */
+function fold(str) {
+  return String(str).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function score(name, q, folded) {
+  var n = folded !== undefined ? folded : fold(name);
   if (n === q) return 0;
   if (n.indexOf(q) === 0) return 1;
   var w = n.indexOf(" " + q);
@@ -141,7 +163,7 @@ function score(name, q) {
 }
 
 function runSearch() {
-  var q = document.getElementById("q").value.trim().toLowerCase();
+  var q = fold(document.getElementById("q").value.trim());
   var numeric = /^\d{6,}$/.test(q) ? parseInt(q, 10) : null;
   var out = [];
   for (var i = 0; i < INDEX.length; i++) {
@@ -153,7 +175,7 @@ function runSearch() {
       continue;
     }
     if (q) {
-      var s = score(r.n, q);
+      var s = score(r.n, q, r.f);
       if (s < 0) continue;
       out.push([s, r]);
     } else {
@@ -182,13 +204,14 @@ function runSearch() {
     img.onerror = function () { this.style.visibility = "hidden"; };
     var txt = el("div", "txt");
     txt.appendChild(el("div", "nm", r.n));
-    var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect" : "Class";
+    var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
+                 : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence" : "Class";
     txt.appendChild(el("div", "mt", kindWord +
       (r.c && r.c !== "Class" ? " - " + titleCase(r.c) : "")));
     row.appendChild(img);
     row.appendChild(txt);
     row.onclick = function () {
-      location.hash = "#/" + (r.t === "s" ? "skill" : r.t === "e" ? "effect" : "class") + "/" + r.i;
+      location.hash = "#/" + routeFor(r.t) + "/" + r.i;
     };
     frag.appendChild(row);
   });
@@ -200,11 +223,21 @@ function runSearch() {
 /* ---------------- progression chart ---------------- */
 
 /* Progression arrays are a fixed-width table, so a curve with 5 real values is
-   stored as 5 values and 155 zeros. Plotting the padding is misleading. */
+   stored as 5 values and 155 zeros. Plotting the padding is misleading, and so
+   is the tail of a curve that has stopped moving - a trait with three real
+   ranks stores rank 3's value another 157 times. Cut both, keeping the first
+   entry that reaches the final value, and remember how far the stored table
+   ran so a caption can say the value holds. */
 function trimPadding(pts) {
   var end = pts.length;
   while (end > 2 && pts[end - 1][1] === 0) end--;
-  return end === pts.length ? pts : pts.slice(0, end);
+  var last = pts[end - 1][1];
+  var stop = end;
+  while (stop > 1 && pts[stop - 2][1] === last) stop--;
+  if (stop === pts.length) return pts;
+  var out = pts.slice(0, stop);
+  if (stop < end) out.holdsTo = pts[end - 1][0];
+  return out;
 }
 
 function curvePoints(p) {
@@ -224,6 +257,14 @@ function curvePoints(p) {
 
 /* A few discrete steps read better as a table than as a line - a trait with
    five ranks is a comparison of five values, not a trend. */
+/* "holds at that value to level 160" is worth saying on a level curve, where
+   the cap is real information. On a trait's rank table the stored tail is just
+   table width, so it goes unmentioned. */
+function holdNote(pts, xLabel) {
+  if (!pts.holdsTo || (xLabel || "Level") !== "Level") return "";
+  return " - unchanged through level " + pts.holdsTo;
+}
+
 function stepTable(pts, label, xLabel) {
   var wrap = el("div", "chart");
   var t = el("table", "t");
@@ -237,7 +278,7 @@ function stepTable(pts, label, xLabel) {
     t.appendChild(tr);
   });
   wrap.appendChild(t);
-  var cap = el("div", "muted", label);
+  var cap = el("div", "muted", label + holdNote(pts, xLabel));
   cap.style.fontSize = "11.5px";
   wrap.appendChild(cap);
   return wrap;
@@ -329,7 +370,8 @@ function chart(pts, label, xLabel) {
 
   wrap.appendChild(svg);
   var cap = el("div", "muted", label + " - " + pts.length + " points, " +
-    (xLabel || "level").toLowerCase() + " " + x0 + " to " + x1);
+    (xLabel || "level").toLowerCase() + " " + x0 + " to " + x1 +
+    holdNote(pts, xLabel));
   cap.style.fontSize = "11.5px";
   wrap.appendChild(cap);
   return wrap;
@@ -337,12 +379,17 @@ function chart(pts, label, xLabel) {
 
 /* ---------------- rendering ---------------- */
 
+function routeFor(t) {
+  return t === "s" ? "skill" : t === "e" ? "effect"
+       : t === "y" ? "tracery" : t === "z" ? "essence" : "class";
+}
+
 function nameOf(id) {
   for (var i = 0; i < INDEX.length; i++) if (INDEX[i].i === id) return INDEX[i];
   return null;
 }
 
-function linkList(refs, kindGuess) {
+function linkList(refs, kindGuess, subLine) {
   var ul = el("ul", "links");
   refs.forEach(function (r) {
     var id = typeof r === "number" ? r : r.id;
@@ -353,22 +400,55 @@ function linkList(refs, kindGuess) {
     img.alt = "";
     img.onerror = function () { this.style.visibility = "hidden"; };
     li.appendChild(img);
+
+    var body = el("div");
     var a = el("a", null, meta ? meta.n : "#" + id);
-    var kind = meta ? (meta.t === "s" ? "skill" : meta.t === "e" ? "effect" : "class") : kindGuess;
+    var kind = meta ? routeFor(meta.t) : kindGuess;
     a.href = "#/" + kind + "/" + id;
-    li.appendChild(a);
+    body.appendChild(a);
     var bits = [];
     if (r && r.duration !== undefined) bits.push(fmt(r.duration) + "s");
     if (r && r.spellcraft !== undefined) bits.push("sc " + fmt(r.spellcraft));
     if (r && r.via) bits.push(r.via);
-    if (bits.length) li.appendChild(el("span", "via", bits.join("  ")));
+    if (bits.length) body.appendChild(el("span", "via", bits.join("  ")));
+
+    var extra = subLine ? subLine(id) : null;
+    if (extra) {
+      body.appendChild(extra);
+      li.className = "twoline";
+    }
+    li.appendChild(body);
     ul.appendChild(li);
   });
   return ul;
 }
 
+/* Under each effect a skill applies, the traceries that scale it. Answering
+   "what gear affects this" without making the reader open every effect.
+   Traceries only - essences are listed per property elsewhere. */
+function traceryLine(ET) {
+  if (!ET) return null;
+  return function (effectId) {
+    var ids = ET[String(effectId)];
+    if (!ids || !ids.length) return null;
+    var line = el("div", "trline");
+    line.appendChild(el("span", "muted", "traceries: "));
+    line.appendChild(linkRun(ids.map(function (tid) {
+      return function () {
+        var meta = nameOf(tid);
+        var a = el("a", "trc", meta ? meta.n : "#" + tid);
+        a.href = "#/tracery/" + tid;
+        return a;
+      };
+    }), 4, 0));
+    return line;
+  };
+}
+
 function section(host, title, node) {
   if (!node) return;
+  // an empty <ul>/<table> body means there was nothing to show after all
+  if (node.tagName === "UL" && !node.children.length) return;
   host.appendChild(el("h3", "sec", title));
   host.appendChild(node);
 }
@@ -377,12 +457,60 @@ function statRow(pairs) {
   var box = el("div", "stats");
   pairs.forEach(function (p) {
     if (p[1] === undefined || p[1] === null || p[1] === "-") return;
-    var s = el("div", "stat");
+    var s = el("div", "stat" + (p[2] ? " " + p[2] : ""));
     s.appendChild(el("div", "k", p[0]));
-    s.appendChild(el("div", "v", p[1]));
+    // a value may be a plain string or a built node (a run of links)
+    if (p[1] && p[1].nodeType) {
+      var v = el("div", "v");
+      v.appendChild(p[1]);
+      s.appendChild(v);
+    } else {
+      s.appendChild(el("div", "v", p[1]));
+    }
     box.appendChild(s);
   });
   return box.children.length ? box : null;
+}
+
+/* Every tracery that scales something this skill reads. The same answer the
+   modifier table gives property by property, collected into one line up top.
+   Traceries only - essences stay in the per-property lists below. */
+function skillTraceries(s, MS) {
+  if (!MS) return null;
+  var props = [];
+  var groups = (s.mods || []).slice();
+  (s.attacks || []).forEach(function (a) {
+    (a.mods || []).forEach(function (gg) { groups.push(gg); });
+  });
+  groups.forEach(function (gg) { props = props.concat(gg.props || []); });
+  (s.costs || []).forEach(function (c) { props = props.concat(c.mods || []); });
+
+  var seen = {}, ids = [];
+  props.forEach(function (prop) {
+    var src = MS[prop];
+    if (!src) return;
+    (src.traceries || []).forEach(function (tid) {
+      if (seen[tid]) return;
+      var meta = nameOf(tid);
+      if (!meta || meta.t !== "y") return;
+      seen[tid] = 1;
+      ids.push(tid);
+    });
+  });
+  if (!ids.length) return null;
+  ids.sort(function (a, b) {
+    var x = nameOf(a).n, y = nameOf(b).n;
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
+  var box = el("div", "trrun");
+  box.appendChild(linkRun(ids.map(function (tid) {
+    return function () {
+      var a = el("a", "trc", nameOf(tid).n);
+      a.href = "#/tracery/" + tid;
+      return a;
+    };
+  }), 6, 0));
+  return box;
 }
 
 function rawBlock(kind, id) {
@@ -472,6 +600,8 @@ function positionalBlock(s) {
   return wrap;
 }
 
+/* A wedge is far easier to read than "120 deg at heading 180". 0 deg is the
+   facing direction, drawn upwards, and the wedge is centred on the heading. */
 function arcDiagram(degrees, radius, heading, anchor, caption, centreLabel) {
   var ns = "http://www.w3.org/2000/svg";
   var S = 132, c = S / 2, r = S / 2 - 16;
@@ -524,12 +654,12 @@ function arcDiagram(degrees, radius, heading, anchor, caption, centreLabel) {
 
 function progChart(host, progs, progId, label) {
   var pts = curvePoints(progs[String(progId)]);
-  if (!pts || pts.length < 2) return false;
+  if (!pts || !pts.length) return false;
   host.appendChild(chart(pts, label, "Level"));
   return true;
 }
 
-function renderSkill(s, progs, D, MS) {
+function renderSkill(s, progs, D, MS, ET) {
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -570,7 +700,8 @@ function renderSkill(s, progs, D, MS) {
     ["Range", range],
     ["Threat", s.threat],
     ["Pip change", s.pipChange],
-    ["Resist", s.resistCategory]
+    ["Resist", s.resistCategory],
+    ["Traceries", skillTraceries(s, MS), "wide"]
   ]));
 
   section(host, "Area of effect", areaBlock(s));
@@ -597,9 +728,18 @@ function renderSkill(s, progs, D, MS) {
   }
 
   if (s.attacks) {
+    // Max damage and positional are blank on most skills. Rather than a column
+    // of dashes, only draw a column when some hook actually fills it.
+    var hasMax = s.attacks.some(function (a) {
+      return a.damageMax !== undefined || a.damageMaxProgression;
+    });
+    var hasPos = s.attacks.some(function (a) {
+      return a.positionalMultiplier !== undefined && a.positionalMultiplier !== 1;
+    });
     var at = el("table", "t");
     at.innerHTML = "<tr><th>#</th><th>Qualifier</th><th>Type</th><th>Modifier</th>" +
-      "<th>Max damage</th><th>Crit</th><th>Positional</th><th>Implement</th></tr>";
+      (hasMax ? "<th>Max damage</th>" : "") + "<th>Crit</th>" +
+      (hasPos ? "<th>Positional</th>" : "") + "<th>Implement</th></tr>";
     s.attacks.forEach(function (a, i) {
       var tr = el("tr");
       var imp = ["usesPrimary", "usesSecondary", "usesRanged", "usesNatural", "usesTactical"]
@@ -609,11 +749,11 @@ function renderSkill(s, progs, D, MS) {
         "<td>" + esc(a.damageQualifier || "-") + "</td>" +
         "<td>" + esc(a.damageType || "-") + "</td>" +
         '<td class="num">' + fmt(a.damageModifier) + "</td>" +
-        '<td class="num">' + (a.damageMax !== undefined ? fmt(a.damageMax) :
-          a.damageMaxProgression ? "progression " + a.damageMaxProgression : "-") + "</td>" +
+        (hasMax ? '<td class="num">' + (a.damageMax !== undefined ? fmt(a.damageMax) :
+          a.damageMaxProgression ? "progression " + a.damageMaxProgression : "-") + "</td>" : "") +
         '<td class="num">' + (a.critMultiplier !== undefined ? "x" + fmt(a.critMultiplier) : "-") + "</td>" +
-        '<td class="num">' + (a.positionalMultiplier !== undefined && a.positionalMultiplier !== 1
-          ? "x" + fmt(a.positionalMultiplier) : "-") + "</td>" +
+        (hasPos ? '<td class="num">' + (a.positionalMultiplier !== undefined && a.positionalMultiplier !== 1
+          ? "x" + fmt(a.positionalMultiplier) : "-") + "</td>" : "") +
         "<td>" + esc(imp || "-") + "</td>";
       at.appendChild(tr);
     });
@@ -632,7 +772,10 @@ function renderSkill(s, progs, D, MS) {
         });
       });
     });
-    if (hookEffects.length) section(host, "Effects applied on hit", linkList(hookEffects, "effect"));
+    if (hookEffects.length) {
+      section(host, "Effects applied on hit",
+              linkList(hookEffects, "effect", traceryLine(ET)));
+    }
   }
 
   [["userEffects", "Effects on the caster"],
@@ -644,7 +787,7 @@ function renderSkill(s, progs, D, MS) {
    ["requiredEffects", "Requires these effects"],
    ["barringEffects", "Barred by these effects"],
    ["consumedEffects", "Consumes these effects"]].forEach(function (pair) {
-    if (s[pair[0]]) section(host, pair[1], linkList(s[pair[0]], "effect"));
+    if (s[pair[0]]) section(host, pair[1], linkList(s[pair[0]], "effect", traceryLine(ET)));
   });
 
   if (s.combos) section(host, "Combos", linkList(s.combos.map(function (c) {
@@ -658,7 +801,7 @@ function renderSkill(s, progs, D, MS) {
   return host;
 }
 
-function renderEffect(e, progs, MS) {
+function renderEffect(e, progs, MS, D, ET) {
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -699,9 +842,11 @@ function renderEffect(e, progs, MS) {
     ["Resist", e.resistCategory]
   ]));
 
-  section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs));
+  section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs, "Level", D));
 
-  if (e.nested) section(host, "Applies these effects", linkList(e.nested, "effect"));
+  if (D && MS) section(host, "Modifiers", modsBlock(e, D, MS));
+
+  if (e.nested) section(host, "Applies these effects", linkList(e.nested, "effect", traceryLine(ET)));
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
   if (e.usedBySkills) section(host, "Applied by these skills", linkList(e.usedBySkills, "skill"));
 
@@ -745,6 +890,10 @@ function obtainedBlock(s, D) {
     }
     if (o.how === "level") {
       li.appendChild(el("span", null, " - trained at level " + o.level));
+    } else if (o.how === "rank") {
+      li.appendChild(el("span", null, o.rank ? " - earned at rank " + o.rank
+                                             : " - available from the start"));
+      if (o.cost) li.appendChild(el("span", "via", o.cost + " destiny points"));
     } else {
       var t = D.traits[String(o.trait)];
       li.appendChild(el("span", null, " - from trait "));
@@ -756,6 +905,7 @@ function obtainedBlock(s, D) {
       if (o.branch) bits.push(branchName(o.branch, o.branchName));
       if (o.cell) bits.push("cell " + o.cell);
       if (o.level) bits.push("level " + o.level);
+      if (o.classRank) bits.push("class rank " + o.classRank);
       if (bits.length) li.appendChild(el("span", "via", bits.join("  ")));
     }
     ul.appendChild(li);
@@ -763,6 +913,9 @@ function obtainedBlock(s, D) {
   return ul;
 }
 
+/* The shown branch name ("The Quiet Knife") comes from the enum's localised
+   log_strings and is resolved at extraction time. Fall back to the tail of the
+   internal key ("Class_Specialization_Burglar_Two") if it is ever missing. */
 function branchName(key, name) {
   if (name) return name;
   if (!key) return "";
@@ -784,12 +937,10 @@ function showLandingClasses() {
   if (!landing || landing.dataset.filled) return;
   landing.dataset.filled = "1";
   classData().then(function (D) {
-    var grid = el("div", "stats");
-    grid.style.marginTop = "18px";
-    Object.keys(D.classes).map(function (k) { return D.classes[k]; })
-      .sort(function (a, b) { return a.name.localeCompare(b.name); })
-      .forEach(function (c) { grid.appendChild(classCard(c)); });
-    landing.appendChild(grid);
+    var box = el("div");
+    box.style.marginTop = "18px";
+    classGrids(D, box);
+    landing.appendChild(box);
   });
 }
 
@@ -803,19 +954,36 @@ function classCard(c) {
   a.appendChild(img);
   var t = el("div");
   t.appendChild(el("div", "cn", c.name));
-  t.appendChild(el("div", "mt", (c.skills || []).length + " trained skills"));
+  t.appendChild(el("div", "mt", (c.skills || []).length +
+    (c.side === "creep" ? " skills by rank" : " trained skills")));
   a.appendChild(t);
   return a;
 }
 
+/* Free Peoples classes advance by level, monster-play classes by rank, so they
+   are listed apart rather than sorted into one alphabet. */
+function classGroups(D) {
+  var all = Object.keys(D.classes).map(function (k) { return D.classes[k]; })
+    .sort(function (a, b) { return a.name.localeCompare(b.name); });
+  return [
+    ["Classes", all.filter(function (c) { return c.side !== "creep"; })],
+    ["Monster play", all.filter(function (c) { return c.side === "creep"; })]
+  ];
+}
+
+function classGrids(D, host) {
+  classGroups(D).forEach(function (g) {
+    if (!g[1].length) return;
+    host.appendChild(el("h3", "sec", g[0]));
+    var grid = el("div", "stats");
+    g[1].forEach(function (c) { grid.appendChild(classCard(c)); });
+    host.appendChild(grid);
+  });
+}
+
 function renderClassList(D) {
   var host = el("div");
-  host.appendChild(el("h3", "sec", "Classes"));
-  var grid = el("div", "stats");
-  Object.keys(D.classes).map(function (k) { return D.classes[k]; })
-    .sort(function (a, b) { return a.name.localeCompare(b.name); })
-    .forEach(function (c) { grid.appendChild(classCard(c)); });
-  host.appendChild(grid);
+  classGrids(D, host);
   return host;
 }
 
@@ -832,14 +1000,28 @@ function renderClass(c, D) {
   h.appendChild(el("div", "id", "class " + c.id + (c.code ? "  /  internally " + c.code : "")));
   head.appendChild(h);
   host.appendChild(head);
+  if (c.side === "creep") {
+    var tg = el("div", "tags");
+    tg.appendChild(el("span", "tag kind", "Monster play"));
+    if (c.unlockCost) {
+      tg.appendChild(el("span", "tag", "unlocks for " + c.unlockCost));
+    }
+    host.appendChild(tg);
+  }
   if (c.desc) host.appendChild(richPara("desc", c.desc));
 
-  // --- skills trained by level ---
+  // --- skills earned by level (players) or by rank (creeps) ---
+  var creep = c.side === "creep";
+  var step = creep ? "rank" : "level";
   if (c.skills) {
     var byLevel = {};
-    c.skills.forEach(function (e) { (byLevel[e.level] = byLevel[e.level] || []).push(e); });
+    c.skills.forEach(function (e) {
+      var at = creep ? (e.rank || 0) : e.level;
+      (byLevel[at] = byLevel[at] || []).push(e);
+    });
     var t = el("table", "t");
-    t.innerHTML = "<tr><th>Level</th><th>Skill</th><th>Prerequisite</th></tr>";
+    t.innerHTML = "<tr><th>" + (creep ? "Rank" : "Level") + "</th><th>Skill</th><th>" +
+      (creep ? "Cost" : "Prerequisite") + "</th></tr>";
     Object.keys(byLevel).map(Number).sort(function (a, b) { return a - b; })
       .forEach(function (lvl) {
         byLevel[lvl].forEach(function (e, i) {
@@ -856,13 +1038,18 @@ function renderClass(c, D) {
           var a = el("a", null, meta ? meta.n : "#" + e.id);
           a.href = "#/skill/" + e.id;
           td1.appendChild(a);
-          var pm = e.prerequisite ? nameOf(e.prerequisite) : null;
-          var td2 = el("td", "muted", pm ? pm.n : "");
+          var td2;
+          if (creep) {
+            td2 = el("td", "muted", e.cost ? e.cost + " destiny points" : "free");
+          } else {
+            var pm = e.prerequisite ? nameOf(e.prerequisite) : null;
+            td2 = el("td", "muted", pm ? pm.n : "");
+          }
           tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2);
           t.appendChild(tr);
         });
       });
-    section(host, "Skills trained by level", t);
+    section(host, creep ? "Skills earned by rank" : "Skills trained by level", t);
   }
 
   // --- the trait tree, branch by branch ---
@@ -894,17 +1081,93 @@ function renderClass(c, D) {
           (grants ? "  grants " + grants + " skill" + (grants === 1 ? "" : "s") : "")));
       });
       hh.appendChild(ul);
+
+      // set bonuses: awarded for points spent in this branch, not placed in it
+      if (br.setBonuses && br.setBonuses.length) {
+        var sb = el("div", "setbonus");
+        sb.appendChild(el("div", "sbh", "Set bonuses"));
+        var sul = el("ul", "links");
+        br.setBonuses.forEach(function (bonus) {
+          sul.appendChild(traitLink(D.traits[String(bonus.trait)],
+                                    bonus.points + " points"));
+        });
+        sb.appendChild(sul);
+        hh.appendChild(sb);
+      }
       host.appendChild(hh);
     });
   });
+
+  // --- every skill this class picks up from a trait rather than a level ---
+  var granted = [];
+  var seen = {};
+  function addGrant(traitId, where) {
+    var t = D.traits[String(traitId)];
+    if (!t || !t.skills) return;
+    t.skills.forEach(function (g) {
+      var key = g.id + ":" + traitId;
+      if (seen[key]) return;
+      seen[key] = 1;
+      granted.push({ skill: g.id, rank: g.rank, trait: t, where: where });
+    });
+  }
+  (c.trees || []).forEach(function (tid) {
+    var tree = D.trees[String(tid)];
+    if (!tree) return;
+    tree.cells.forEach(function (cell) {
+      addGrant(cell.trait, branchName(cell.branch, cell.branchName) + " " + cell.cell);
+    });
+    (tree.branches || []).forEach(function (br) {
+      (br.setBonuses || []).forEach(function (bonus) {
+        addGrant(bonus.trait, branchName(br.key, br.name) + " set, " + bonus.points + " points");
+      });
+    });
+  });
+  (c.traits || []).forEach(function (e) {
+    addGrant(e.id, "class trait at " + step + " " + (creep ? (e.rank || 0) : e.level));
+  });
+
+  if (granted.length) {
+    granted.sort(function (a, b) {
+      var an = nameOf(a.skill), bn = nameOf(b.skill);
+      return (an ? an.n : "").localeCompare(bn ? bn.n : "");
+    });
+    var gt = el("table", "t");
+    gt.innerHTML = "<tr><th>Skill</th><th>From trait</th><th>Where</th></tr>";
+    granted.forEach(function (g) {
+      var meta = nameOf(g.skill);
+      var tr = el("tr");
+      var td0 = el("td");
+      var im = el("img");
+      im.src = iconUrl(meta ? meta.k : 0);
+      im.alt = "";
+      im.className = "inline";
+      im.onerror = function () { this.style.visibility = "hidden"; };
+      td0.appendChild(im);
+      var a = el("a", null, meta ? meta.n : "#" + g.skill);
+      a.href = "#/skill/" + g.skill;
+      td0.appendChild(a);
+      if (g.rank) td0.appendChild(el("span", "via", "at rank " + g.rank));
+      tr.appendChild(td0);
+      var td1 = el("td");
+      var ta = el("a", null, g.trait.name);
+      ta.href = "#/trait/" + g.trait.id;
+      td1.appendChild(ta);
+      tr.appendChild(td1);
+      tr.appendChild(el("td", "muted", g.where));
+      gt.appendChild(tr);
+    });
+    section(host, "Skills granted by traits", gt);
+  }
 
   // --- passive class traits earned at a level ---
   if (c.traits) {
     var ul2 = el("ul", "links");
     c.traits.forEach(function (e) {
-      ul2.appendChild(traitLink(D.traits[String(e.id)], "level " + e.level));
+      ul2.appendChild(traitLink(D.traits[String(e.id)],
+                                step + " " + (creep ? (e.rank || 0) : e.level)));
     });
-    section(host, "Class traits by level", ul2);
+    section(host, creep ? "Class traits by rank" : "Class traits by level", ul2);
   }
   return host;
 }
@@ -939,7 +1202,7 @@ function renderTrait(t, D, MS, progs) {
     ["Minimum level", t.minLevel]
   ]));
   // a trait's Mod_Progression is indexed by the trait's RANK, not by level
-  section(host, "What it changes", grantsBlock(t.stats, MS, progs, "Rank"));
+  section(host, "What it changes", grantsBlock(t.stats, MS, progs, "Rank", D));
 
   if (t.skills) {
     section(host, "Skills granted", linkList(t.skills.map(function (g) {
@@ -977,6 +1240,92 @@ function renderTrait(t, D, MS, progs) {
   return host;
 }
 
+/* A skill's *_Mod_Array names PROPERTIES, not sources - "this multiplier is
+   scaled by Corsair_Positional_Bonus". This resolves each property back to the
+   traits and effects that actually grant it, which is the part a player wants. */
+/* Render every link, hide the overflow, and let "+N more" reveal it. A count
+   with no way to see what it counts is just a tease. */
+function linkRun(items, limit, notListed) {
+  var frag = document.createDocumentFragment();
+  var hidden = [];
+  items.forEach(function (make, i) {
+    var sep = i ? document.createTextNode(", ") : null;
+    var node = make();
+    if (!node) return;
+    if (i < limit) {
+      if (sep) frag.appendChild(sep);
+      frag.appendChild(node);
+    } else {
+      var span = el("span");
+      span.hidden = true;
+      if (sep) span.appendChild(sep);
+      span.appendChild(node);
+      hidden.push(span);
+      frag.appendChild(span);
+    }
+  });
+  var extra = hidden.length;
+  if (extra || notListed) {
+    var more = el("a", "more");
+    more.href = "#";
+    more.textContent = extra ? "  +" + extra + " more" : "";
+    if (extra) {
+      more.onclick = function (ev) {
+        ev.preventDefault();
+        var open = hidden.length && hidden[0].hidden;
+        hidden.forEach(function (h) { h.hidden = !open; });
+        more.textContent = open ? "  show fewer" : "  +" + extra + " more";
+        return false;
+      };
+      frag.appendChild(more);
+    }
+    if (notListed) {
+      frag.appendChild(el("span", "via", "  (" + notListed + " not listed)"));
+    }
+  }
+  return frag;
+}
+
+function sourceFragment(prop, MS, D, limit) {
+  var frag = document.createDocumentFragment();
+  var src = MS && MS[prop];
+  if (!src || (!src.traits && !src.effects && !src.traceries)) {
+    frag.appendChild(el("span", "muted", "no source in this dataset"));
+    return frag;
+  }
+  var makers = [];
+  (src.traits || []).forEach(function (id) {
+    makers.push(function () {
+      var t = D.traits[String(id)];
+      if (!t) return null;
+      var a = el("a", null, t.name);
+      a.href = "#/trait/" + id;
+      return a;
+    });
+  });
+  (src.traceries || []).forEach(function (id) {
+    makers.push(function () {
+      var meta = nameOf(id);
+      var essence = meta && meta.t === "z";
+      var a = el("a", essence ? "ess" : "trc",
+                 (meta ? meta.n : "#" + id) + (essence ? " (essence)" : " (tracery)"));
+      a.href = "#/" + (essence ? "essence" : "tracery") + "/" + id;
+      return a;
+    });
+  });
+  (src.effects || []).forEach(function (id) {
+    makers.push(function () {
+      var meta = nameOf(id);
+      var a = el("a", "eff", meta ? meta.n : "#" + id);
+      a.href = "#/effect/" + id;
+      return a;
+    });
+  });
+  frag.appendChild(linkRun(makers, limit || 6,
+    (src.traitsMore || 0) + (src.effectsMore || 0) + (src.traceriesMore || 0)));
+  return frag;
+}
+
 function sourceCell(prop, MS, D) {
   var td = el("td");
   var src = MS[prop];
@@ -984,36 +1333,15 @@ function sourceCell(prop, MS, D) {
     td.appendChild(el("span", "muted", "no source in this dataset"));
     return td;
   }
-  var shown = 0, LIMIT = 6;
-  (src.traits || []).forEach(function (id) {
-    if (shown >= LIMIT) return;
-    var t = D.traits[String(id)];
-    if (!t) return;
-    if (shown) td.appendChild(document.createTextNode(", "));
-    var a = el("a", null, t.name);
-    a.href = "#/trait/" + id;
-    td.appendChild(a);
-    shown++;
-  });
-  (src.effects || []).forEach(function (id) {
-    if (shown >= LIMIT) return;
-    var meta = nameOf(id);
-    if (shown) td.appendChild(document.createTextNode(", "));
-    var a = el("a", null, meta ? meta.n : "#" + id);
-    a.href = "#/effect/" + id;
-    a.className = "eff";
-    td.appendChild(a);
-    shown++;
-  });
-  var total = (src.traits || []).length + (src.effects || []).length +
-              (src.traitsMore || 0) + (src.effectsMore || 0);
-  if (total > shown) {
-    td.appendChild(el("span", "via", "  +" + (total - shown) + " more"));
-  }
+  td.appendChild(sourceFragment(prop, MS, D, 6));
   return td;
 }
 
-function grantsBlock(stats, MS, progs, xLabel) {
+/* The other direction from modsBlock: a trait or effect says which properties
+   it grants, and this shows what those properties actually scale - across
+   skills, and across other effects and traits, which read them through
+   Mod_ModifierList. */
+function grantsBlock(stats, MS, progs, xLabel, D) {
   if (!stats || !stats.length) return null;
   var wrap = el("div");
   var t = el("table", "t");
@@ -1021,10 +1349,27 @@ function grantsBlock(stats, MS, progs, xLabel) {
 
   stats.forEach(function (st) {
     var tr = el("tr");
+
     var td0 = el("td");
     td0.appendChild(el("code", "pn", st.stat));
-    if (st.description) td0.appendChild(el("div", "muted", st.description));
+    if (st.description) {
+      var dd = el("div", "muted");
+      dd.appendChild(richText(st.description));
+      td0.appendChild(dd);
+    }
+    // this modifier can itself be conditional
+    if (st.modifiedBy && st.modifiedBy.length && D) {
+      st.modifiedBy.forEach(function (prop) {
+        var line = el("div", "muted");
+        line.appendChild(document.createTextNode("scaled by "));
+        line.appendChild(el("code", "pn", prop));
+        line.appendChild(document.createTextNode(" from "));
+        line.appendChild(sourceFragment(prop, MS, D, 4));
+        td0.appendChild(line);
+      });
+    }
     tr.appendChild(td0);
+
     tr.appendChild(el("td", null, st.op || "Add"));
 
     var td2 = el("td", "num");
@@ -1042,33 +1387,7 @@ function grantsBlock(stats, MS, progs, xLabel) {
     }
     tr.appendChild(td2);
 
-    // which skill values this property feeds into
-    var td3 = el("td");
-    var used = MS && MS[st.stat] && MS[st.stat].skills;
-    if (!used || !used.length) {
-      td3.appendChild(el("span", "muted", "no skill in this dataset reads it"));
-    } else {
-      var byField = {};
-      used.forEach(function (u) { (byField[u[1]] = byField[u[1]] || []).push(u[0]); });
-      Object.keys(byField).sort().forEach(function (field) {
-        var ids = byField[field];
-        var line = el("div");
-        line.appendChild(el("strong", null, field));
-        line.appendChild(document.createTextNode(" on "));
-        var SHOW = 10;
-        ids.slice(0, SHOW).forEach(function (id, i) {
-          if (i) line.appendChild(document.createTextNode(", "));
-          var meta = nameOf(id);
-          var a = el("a", null, meta ? meta.n : "#" + id);
-          a.href = "#/skill/" + id;
-          line.appendChild(a);
-        });
-        var extra = ids.length - SHOW + (MS[st.stat].skillsMore || 0);
-        if (extra > 0) line.appendChild(el("span", "via", "  +" + extra + " more"));
-        td3.appendChild(line);
-      });
-    }
-    tr.appendChild(td3);
+    tr.appendChild(readersCell(st.stat, MS));
     t.appendChild(tr);
   });
   wrap.appendChild(t);
@@ -1077,10 +1396,60 @@ function grantsBlock(stats, MS, progs, xLabel) {
     stats.forEach(function (st) {
       if (!st.progression) return;
       var pts = curvePoints(progs[String(st.progression)]);
-      if (pts && pts.length >= 2) wrap.appendChild(chart(pts, st.stat, xLabel));
+      if (pts && pts.length) wrap.appendChild(chart(pts, st.stat, xLabel));
     });
   }
   return wrap;
+}
+
+/* Everything that reads a property: skill values, and other effects and traits
+   that scale one of their own modifiers by it. */
+function readersCell(prop, MS) {
+  var td = el("td");
+  var src = (MS && MS[prop]) || {};
+  var any = false;
+  var SHOW = 10;
+
+  var byField = {};
+  (src.skills || []).forEach(function (u) { (byField[u[1]] = byField[u[1]] || []).push(u[0]); });
+  Object.keys(byField).sort().forEach(function (field) {
+    any = true;
+    var ids = byField[field];
+    var line = el("div");
+    line.appendChild(el("strong", null, field));
+    line.appendChild(document.createTextNode(" on "));
+    line.appendChild(linkRun(ids.map(function (id) {
+      return function () {
+        var meta = nameOf(id);
+        var a = el("a", null, meta ? meta.n : "#" + id);
+        a.href = "#/skill/" + id;
+        return a;
+      };
+    }), SHOW, src.skillsMore || 0));
+    td.appendChild(line);
+  });
+
+  [["readEffects", "effect", "Effects"], ["readTraits", "trait", "Traits"]].forEach(function (spec) {
+    var rows = src[spec[0]] || [];
+    if (!rows.length) return;
+    any = true;
+    var line = el("div");
+    line.appendChild(el("strong", null, spec[2]));
+    line.appendChild(document.createTextNode(" "));
+    line.appendChild(linkRun(rows.map(function (r) {
+      return function () {
+        var meta = nameOf(r[0]);
+        var a = el("a", spec[1] === "effect" ? "eff" : null, meta ? meta.n : "#" + r[0]);
+        a.href = "#/" + spec[1] + "/" + r[0];
+        a.title = "scales its " + r[1];
+        return a;
+      };
+    }), SHOW, src[spec[0] + "More"] || 0));
+    td.appendChild(line);
+  });
+
+  if (!any) td.appendChild(el("span", "muted", "nothing in this dataset reads it"));
+  return td;
 }
 
 function modsBlock(s, D, MS) {
@@ -1119,6 +1488,103 @@ function modsBlock(s, D, MS) {
   return wrap;
 }
 
+/* A tracery ships as 36 items - four rarities across nine level bands - and
+   every item within a rarity carries identical modifiers. So the page is one
+   row per rarity, with the bands listed once rather than 36 near-duplicates. */
+function renderTracery(t, D, MS, progs) {
+  var host = el("div");
+  var head = el("div", "head");
+  var img = el("img");
+  img.src = iconUrl(t.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var h = el("div");
+  h.appendChild(el("h2", null, t.name));
+  h.appendChild(el("div", "id", (t.kind === "essence" ? "essence " : "tracery ") + t.id +
+    (t.socket ? "  /  " + t.socket : "") +
+    (t.channel ? "  /  " + t.channel : "")));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  var tags = el("div", "tags");
+  var isEssence = t.kind === "essence";
+  tags.appendChild(el("span", "tag kind", isEssence ? "Essence" : "Tracery"));
+  // the slot name players use - Word of Mastery / Power / Craft, Heraldic
+  // Tracery - rather than the internal Legacy_Class_Corsair
+  if (t.slot) tags.appendChild(el("span", "tag slot", t.slot));
+  var cls = t["class"] ? D.classes[String(t["class"])] : null;
+  tags.appendChild(el("span", "tag", cls ? cls.name + " only" : "Any class"));
+  host.appendChild(tags);
+
+  if (t.desc) host.appendChild(richPara("desc", t.desc));
+
+  // one row per rarity: the modifiers, and the bands it comes in
+  var tbl = el("table", "t");
+  tbl.innerHTML = "<tr><th>Rarity</th><th>Gives</th><th>Available at</th></tr>";
+  (t.rarities || []).forEach(function (r) {
+    var tr = el("tr");
+    tr.appendChild(el("td", "rar-" + String(r.quality).toLowerCase(), r.quality));
+
+    var td1 = el("td");
+    (r.stats || []).forEach(function (st) {
+      var line = el("div");
+      line.appendChild(el("code", "pn", st.stat));
+      if (st.value !== undefined) {
+        line.appendChild(el("span", null, "  " + (st.op === "Add" ? "+" : "") + fmt(st.value, 4)));
+      } else if (st.progression) {
+        line.appendChild(el("span", "muted", "  scales with item level"));
+      }
+      td1.appendChild(line);
+    });
+    if (!(r.stats || []).length) td1.appendChild(el("span", "muted", "-"));
+    tr.appendChild(td1);
+
+    var td2 = el("td", "muted");
+    var bands = (r.items || []).map(function (b) {
+      return (b.minLevel === undefined ? "?" : b.minLevel) + "-" +
+             (b.maxLevel === undefined ? "?" : b.maxLevel);
+    });
+    td2.appendChild(linkRun((r.items || []).map(function (b, i) {
+      return function () {
+        var sp = el("span", "band", bands[i]);
+        sp.title = "item " + b.id + ", item level " + b.itemLevel;
+        return sp;
+      };
+    }), 12, 0));
+    tr.appendChild(td2);
+    tbl.appendChild(tr);
+  });
+  section(host, "By rarity", tbl);
+
+  // what the properties it grants actually do
+  var allStats = [];
+  var seenStat = {};
+  (t.rarities || []).forEach(function (r) {
+    (r.stats || []).forEach(function (st) {
+      if (!seenStat[st.stat]) { seenStat[st.stat] = 1; allStats.push(st); }
+    });
+  });
+  section(host, "What those properties affect",
+          grantsBlock(allStats, MS, null, "Item level", D));
+
+  if (cls) {
+    var ul = el("ul", "links");
+    var li = el("li");
+    var ci = el("img");
+    ci.src = iconUrl(cls.icon);
+    ci.alt = "";
+    ci.onerror = function () { this.style.visibility = "hidden"; };
+    li.appendChild(ci);
+    var a = el("a", null, cls.name);
+    a.href = "#/class/" + cls.id;
+    li.appendChild(a);
+    ul.appendChild(li);
+    section(host, "Usable by", ul);
+  }
+  return host;
+}
+
 /* ---------------- routing ---------------- */
 
 function route() {
@@ -1144,6 +1610,30 @@ function route() {
       detail.appendChild(renderClassList(D));
       document.title = "Classes - LOTRO Skills and Effects";
     });
+    runSearch();
+    return;
+  }
+
+  var ym = /^#\/(?:tracery|essence)\/(\d+)$/.exec(location.hash);
+  if (ym) {
+    var yid = parseInt(ym[1], 10);
+    selected = "y" + yid;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    Promise.all([traceryData(), classData(), modSources(), progressions()])
+      .then(function (res) {
+        var T = res[0];
+        detail.textContent = "";
+        // any member item id resolves to its family
+        var rec = T[String(yid)] || T[String(TRACERY_OF[yid])];
+        if (!rec) {
+          detail.appendChild(el("div", "empty", "No tracery with id " + yid + "."));
+          return;
+        }
+        detail.appendChild(renderTracery(rec, res[1], res[2], res[3]));
+        detail.scrollTop = 0;
+        document.title = rec.name + " - LOTRO Skills and Effects";
+      });
     runSearch();
     return;
   }
@@ -1180,7 +1670,8 @@ function route() {
   selected = (kind === "skill" ? "s" : "e") + id;
   detail.textContent = "";
   detail.appendChild(el("div", "muted", "loading..."));
-  var jobs = [loadRecord(kind, id), progressions(), classData(), modSources()];
+  var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
+              effectTraceries()];
   Promise.all(jobs).then(function (res) {
     detail.textContent = "";
     var rec = res[0];
@@ -1189,8 +1680,9 @@ function route() {
       return;
     }
     var progs = res[1] || {};
-    detail.appendChild(kind === "skill" ? renderSkill(rec, progs, res[2], res[3])
-                                        : renderEffect(rec, progs, res[3]));
+    detail.appendChild(kind === "skill"
+      ? renderSkill(rec, progs, res[2], res[3], res[4])
+      : renderEffect(rec, progs, res[3], res[2], res[4]));
     detail.scrollTop = 0;
     document.title = rec.name + " - LOTRO Skills and Effects";
   });
@@ -1203,10 +1695,12 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
   .then(function (r) {
     META = r[0];
     INDEX = r[1];
+    INDEX.forEach(function (e) { e.f = fold(e.n); });
     BUCKETS = META.buckets || 128;
     document.getElementById("meta").textContent =
       META.skills.toLocaleString() + " skills, " + META.effects.toLocaleString() +
-      " effects, " + META.progressions.toLocaleString() + " scaling curves";
+      " effects, " + (META.traceries || 0).toLocaleString() + " traceries, " +
+      (META.essences || 0).toLocaleString() + " essences";
     var cats = {};
     INDEX.forEach(function (r2) { if (r2.c) cats[r2.c] = 1; });
     var sel = document.getElementById("fCat");
@@ -1232,7 +1726,7 @@ document.getElementById("q").addEventListener("input", function () {
   clearTimeout(timer);
   timer = setTimeout(runSearch, 90);
 });
-["fSkill", "fEffect", "fClass"].forEach(function (id) {
+["fSkill", "fEffect", "fClass", "fTracery", "fEssence"].forEach(function (id) {
   var b = document.getElementById(id);
   b.onclick = function () {
     typeOn[b.dataset.t] = !typeOn[b.dataset.t];
