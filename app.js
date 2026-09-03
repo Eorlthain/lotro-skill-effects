@@ -389,6 +389,32 @@ function nameOf(id) {
   return null;
 }
 
+/* Traits are not in the search index (there are 3,895 of them and they are not
+   what people search for), so they get their own list rather than linkList's
+   index lookup, which would render them as bare ids. */
+function traitList(ids, D) {
+  var ul = el("ul", "links");
+  (ids || []).forEach(function (id) {
+    var t = D && D.traits[String(id)];
+    var li = el("li");
+    var img = el("img");
+    img.src = iconUrl(t ? t.icon : 0);
+    img.alt = "";
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    li.appendChild(img);
+    var body = el("div");
+    var a = el("a", null, t ? t.name : "#" + id);
+    a.href = "#/trait/" + id;
+    body.appendChild(a);
+    if (t && t.nature) {
+      body.appendChild(el("span", "via", titleCase(String(t.nature).replace("Class_", ""))));
+    }
+    li.appendChild(body);
+    ul.appendChild(li);
+  });
+  return ul;
+}
+
 function linkList(refs, kindGuess, subLine) {
   var ul = el("ul", "links");
   refs.forEach(function (r) {
@@ -794,6 +820,8 @@ function renderSkill(s, progs, D, MS, ET) {
     return { id: c.skill, via: c.mode };
   }), "skill"));
 
+  if (D) section(host, "Effects that need a trait", conditionalBlock(s, D));
+  if (D) section(host, "Procs on this skill", procBlock(s, D));
   if (D && MS) section(host, "Modifiers", modsBlock(s, D, MS));
 
   host.appendChild(el("h3", "sec", "Source data"));
@@ -849,6 +877,9 @@ function renderEffect(e, progs, MS, D, ET) {
   if (e.nested) section(host, "Applies these effects", linkList(e.nested, "effect", traceryLine(ET)));
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
   if (e.usedBySkills) section(host, "Applied by these skills", linkList(e.usedBySkills, "skill"));
+  if (e.appliedByTraits && D) {
+    section(host, "Applied by these traits", traitList(e.appliedByTraits, D));
+  }
 
   host.appendChild(el("h3", "sec", "Source data"));
   host.appendChild(rawBlock("effect", e.id));
@@ -1209,6 +1240,13 @@ function renderTrait(t, D, MS, progs) {
       return { id: g.id, via: g.rank ? "at rank " + g.rank : "" };
     }), "skill"));
   }
+  // The effects the trait puts on you. Most are plumbing - they exist to fill
+  // an effect slot on a skill - so the useful half is which skills they reach.
+  if (t.effects) {
+    section(host, "Effects it applies", linkList(t.effects.map(function (g) {
+      return { id: g.id, via: g.rank ? "at rank " + g.rank : "" };
+    }), "effect"));
+  }
   // which classes reach this trait
   var owners = [];
   Object.keys(D.classes).forEach(function (k) {
@@ -1450,6 +1488,109 @@ function readersCell(prop, MS) {
 
   if (!any) td.appendChild(el("span", "muted", "nothing in this dataset reads it"));
   return td;
+}
+
+/* Effects a skill only applies when something else is in play - almost always
+   a trait. The skill names a property slot; a trait's effect fills it. Without
+   this section the page silently omits half of what a traited skill does. */
+var SLOT_WORDS = {
+  "User Effect List": "on you",
+  "Toggle User Effect List": "on you, while toggled",
+  "Target Effect List": "on the target",
+  "Positional Target Effect List": "on the target, from the right side",
+  "Critical Effect List": "on a critical hit",
+  "Critical Target Effect List": "on the target, on a critical hit",
+  "Super Critical Target Effect List": "on the target, on a devastating critical",
+  "Toggle Effect List": "while toggled"
+};
+
+function effectRunCell(ids) {
+  var td = el("td");
+  td.appendChild(linkRun(ids.map(function (eid) {
+    return function () {
+      var meta = nameOf(eid);
+      var a = el("a", "eff", meta ? meta.n : "#" + eid);
+      a.href = "#/effect/" + eid;
+      return a;
+    };
+  }), 4, 0));
+  return td;
+}
+
+function conditionalBlock(s, D) {
+  var rows = s.conditionalEffects || [];
+  if (!rows.length) return null;
+  var t = el("table", "t");
+  t.innerHTML = "<tr><th>Applies</th><th>Effect</th><th>Only when</th></tr>";
+  rows.forEach(function (r) {
+    var tr = el("tr");
+    var td0 = el("td", null, SLOT_WORDS[r.field] || r.field);
+    if (r.via) td0.appendChild(el("span", "via", r.via));
+    if (r.replaces) td0.appendChild(el("span", "via", "replaces the base list"));
+    tr.appendChild(td0);
+    tr.appendChild(effectRunCell(r.effects));
+
+    var td2 = el("td");
+    var traits = (r.traits || []).filter(function (id) { return D.traits[String(id)]; });
+    if (traits.length) {
+      td2.appendChild(el("span", "muted", "traited "));
+      td2.appendChild(linkRun(traits.map(function (id) {
+        return function () {
+          var a = el("a", null, D.traits[String(id)].name);
+          a.href = "#/trait/" + id;
+          return a;
+        };
+      }), 3, 0));
+    } else {
+      // no trait applies it: an item set or something else we cannot name
+      var meta = nameOf(r.from);
+      var a = el("a", "eff", meta ? meta.n : r.prop);
+      a.href = "#/effect/" + r.from;
+      td2.appendChild(el("span", "muted", "something grants "));
+      td2.appendChild(a);
+    }
+    var pn = el("div");
+    pn.appendChild(el("code", "pn", r.prop));
+    td2.appendChild(pn);
+    if (r.description) {
+      var d = el("div", "muted");
+      d.appendChild(richText(r.description));
+      td2.appendChild(d);
+    }
+    tr.appendChild(td2);
+    t.appendChild(tr);
+  });
+  return t;
+}
+
+/* A proc is attached to a KIND of skill rather than to this one by name, so it
+   is listed apart - it fires on this skill because the skill is that kind. */
+function procBlock(s, D) {
+  var rows = s.procEffects || [];
+  if (!rows.length) return null;
+  var t = el("table", "t");
+  t.innerHTML = "<tr><th>Effect</th><th>Fires on</th><th>From trait</th></tr>";
+  rows.forEach(function (r) {
+    var tr = el("tr");
+    tr.appendChild(effectRunCell(r.effects));
+    var td1 = el("td", "muted", (r.procOn || []).join(", ") || "any hit");
+    td1.appendChild(el("div", null, ""));
+    td1.lastChild.appendChild(el("code", "pn", r.prop));
+    tr.appendChild(td1);
+    var td2 = el("td");
+    td2.appendChild(linkRun((r.traits || []).map(function (id) {
+      return function () {
+        var tt = D.traits[String(id)];
+        if (!tt) return null;
+        var a = el("a", null, tt.name);
+        a.href = "#/trait/" + id;
+        return a;
+      };
+    }), 3, 0));
+    tr.appendChild(td2);
+    t.appendChild(tr);
+  });
+  return t;
 }
 
 function modsBlock(s, D, MS) {
