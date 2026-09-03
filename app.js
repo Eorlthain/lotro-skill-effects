@@ -289,6 +289,14 @@ function fold(str) {
   return String(str).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
 
+/* The same name with every space, hyphen and apostrophe taken out. LOTRO names
+   are full of punctuation nobody wants to reproduce - Shield-taunt, Wizard's
+   Frost, Ranged Skill: Swift Bow - so "shieldtaunt" and "shield taunt" both
+   have to find the same skill. Runs on an already-folded string. */
+function squash(folded) {
+  return folded.replace(/[^a-z0-9]+/g, "");
+}
+
 function score(name, q, folded) {
   var n = folded !== undefined ? folded : fold(name);
   if (n === q) return 0;
@@ -302,6 +310,10 @@ function score(name, q, folded) {
 
 function runSearch() {
   var q = fold(document.getElementById("q").value.trim());
+  // Always worth trying, even when the query itself has no punctuation: the
+  // point is to reach names that do. Only a query that is nothing but
+  // punctuation has no squashed form to match with.
+  var qs = squash(q) || null;
   var numeric = /^\d{6,}$/.test(q) ? parseInt(q, 10) : null;
   var out = [];
   for (var i = 0; i < INDEX.length; i++) {
@@ -314,6 +326,12 @@ function runSearch() {
     }
     if (q) {
       var s = score(r.n, q, r.f);
+      // failing that, try it with the punctuation taken out of both sides. A
+      // shade worse than the literal hit, so exact typing still wins a tie.
+      if (qs !== null) {
+        var s2 = score(r.n, qs, r.q);
+        if (s2 >= 0 && (s < 0 || s2 + 0.25 < s)) s = s2 + 0.25;
+      }
       if (s < 0) continue;
       // an internal ("DNT") entry is plumbing - keep it findable, but never
       // ahead of the thing a player would recognise
@@ -927,8 +945,6 @@ function renderSkill(s, progs, D, MS, ET) {
     if (gb) section(host, "Gambit", gb);
   }
 
-  if (D) section(host, "How you get it", obtainedBlock(s, D));
-
   var range = s.maxRange !== undefined
     ? (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") + fmt(s.maxRange) + "m"
     : null;
@@ -940,6 +956,9 @@ function renderSkill(s, progs, D, MS, ET) {
     ["Resist", s.resistCategory],
     ["Traceries", usesGear(ownerClasses(s), D) ? skillTraceries(s, MS) : null, "wide"]
   ]));
+
+  // what the skill does comes first; where it comes from is reference
+  if (D) section(host, "How you get it", obtainedBlock(s, D));
 
   section(host, "Area of effect", areaBlock(s));
   section(host, "Positional", positionalBlock(s));
@@ -1137,7 +1156,8 @@ function renderEffect(e, progs, MS, D, ET) {
   var totalDur = (e.pulseCount && e.interval) ? e.interval * e.pulseCount
                : (e.duration !== undefined ? e.duration : null);
   section(host, "At a glance", statRow([
-    ["Duration", totalDur !== null ? secs(totalDur) : (e.permanent ? "permanent" : null)],
+    ["Duration", e.permanent ? "permanent"
+                             : (totalDur !== null ? secs(totalDur) : null)],
     ["Pulses", e.pulseCount ? e.pulseCount + " (every " + secs(e.interval) + ")"
                             : null],
     // an effect with no chance of its own says what has to supply one - the
@@ -2311,13 +2331,15 @@ function effectTooltip(e, progs, D, level) {
   // panel ends there. Chance, cure type, stacking and what applies it are all
   // on the page below - the tooltip is the tooltip.
   var foot = el("div", "tipbody");
-  if (e.pulseCount && e.interval) {
+  // permanent wins: such an effect still carries an interval, and printing
+  // that as its duration says it lasts a second when it never expires
+  if (e.permanent) {
+    tipLine(foot, "Duration:", "permanent", "time");
+  } else if (e.pulseCount && e.interval) {
     tipLine(foot, "Duration:", secs(e.interval * e.pulseCount) +
       "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)", "time");
   } else if (e.duration !== undefined) {
     tipLine(foot, "Duration:", secs(e.duration), "time");
-  } else if (e.permanent) {
-    tipLine(foot, "Duration:", "permanent", "time");
   }
   if (foot.children.length) box.appendChild(foot);
   return box;
@@ -2436,7 +2458,8 @@ function statAmount(st, meta, signed) {
   var n, suffix = "";
   if (st.op === "Multiply") {
     if (pct) { n = (v - 1) * 100; suffix = "%"; }
-    else { n = v; }
+    // a plain multiplier is not an amount to sign - the game writes "x0.9"
+    else { return "x" + fmt(v, 3).replace(/\.?0+$/, ""); }
   } else if (pct) {
     n = v * 100; suffix = "%";
   } else {
@@ -3000,7 +3023,7 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
   .then(function (r) {
     META = r[0];
     INDEX = r[1];
-    INDEX.forEach(function (e) { e.f = fold(e.n); });
+    INDEX.forEach(function (e) { e.f = fold(e.n); e.q = squash(e.f); });
     BUCKETS = META.buckets || 128;
     document.getElementById("meta").textContent =
       [META.skills.toLocaleString() + " skills",
