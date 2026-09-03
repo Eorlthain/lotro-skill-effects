@@ -236,7 +236,15 @@ function fmt(n, dp) {
   if (typeof n !== "number") return String(n);
   if (Number.isInteger(n)) return String(n);
   var s = n.toFixed(dp === undefined ? 2 : dp);
-  return s.replace(/\.?0+$/, "");
+  // strip trailing zeros only after a decimal point - the old pattern turned
+  // toFixed(0) of 30.000001 ("30") into "3"
+  return s.indexOf(".") === -1 ? s
+       : s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+/* Thousands separators, the way the game writes damage: 21,420. */
+function num(n) {
+  return typeof n === "number" ? Math.round(n).toLocaleString() : fmt(n);
 }
 
 function secs(n) { return n === undefined || n === null ? "-" : fmt(n) + "s"; }
@@ -1050,12 +1058,15 @@ function renderEffect(e, progs, MS, D, ET) {
   // spelled out, because titleCase turns "uiVisible" into "Ui Visible"
   var FLAG_WORDS = {
     debuff: "Debuff", permanent: "Permanent", combatOnly: "Combat only",
-    curable: "Curable", uiVisible: "Shown in the UI",
+    uiVisible: "Shown in the UI",
     removeOnDefeat: "Removed on defeat", removeOnAwaken: "Removed on waking"
   };
   Object.keys(FLAG_WORDS).forEach(function (f) {
     if (e[f]) tags.appendChild(el("span", "tag", FLAG_WORDS[f]));
   });
+  // only a named cure type earns the word - see CURE_TYPES in normalize.py
+  if (e.cureType) tags.appendChild(el("span", "tag", "Curable: " + e.cureType));
+  if (e.removeType) tags.appendChild(el("span", "tag", e.removeType));
   host.appendChild(tags);
 
   if (e.desc) host.appendChild(richPara("desc", e.desc));
@@ -1091,6 +1102,16 @@ function renderEffect(e, progs, MS, D, ET) {
     tipWrap.appendChild(ctl);
   }
   drawEffectTip();
+  var vv = e.vital || {};
+  if (vv.vpsInitial || vv.vpsPerPulse) {
+    var vn = el("div", "muted tipnote");
+    vn.innerHTML = "<strong>V</strong> is your base vitals-per-second at this "
+      + "level - the rate the game scales heals and over-time effects from, "
+      + "before your own healing or damage stats are applied. The coefficient "
+      + "beside it is the effect's own. Effects without it carry a flat amount "
+      + "and are shown as a number.";
+    tipWrap.appendChild(vn);
+  }
   section(host, "Tooltip", tipWrap);
 
   section(host, "At a glance", statRow([
@@ -1996,7 +2017,7 @@ function tooltipPanel(s, progs, D, level) {
     var v = c.points !== undefined ? c.points : progAt(progs, c.progression, level);
     var txt = v === null || v === undefined
       ? (c.percent !== undefined ? fmt(c.percent) + "% of your " + (c.type || "vital") : null)
-      : fmt(Math.round(v)) + " " + (c.type || "");
+      : num(v) + " " + (c.type || "");
     tipLine(foot, "Cost:", txt);
   });
   if (s.pipChange) {
@@ -2050,21 +2071,17 @@ function effectTooltip(e, progs, D, level) {
   var body = el("div", "tipbody");
   var v = e.vital;
   if (v) {
-    var word = e.harmful ? "Deals" : "Restores";
-    var vital = e.vitalType === "Power" ? "Power" : "Morale";
     var init = v.initial !== undefined ? v.initial
              : progAt(progs, v.initialProgression, level);
-    if (init) {
-      tipLine(body, null, word + " " +
-        fmt(Math.round(Math.abs(init) * (v.baseMultiplier || 1))) + " " +
-        (e.damageType ? e.damageType + " " : "") + vital +
-        (e.pulseCount ? " on application" : ""));
-    }
     var per = progAt(progs, v.perPulseProgression, level);
-    if (per && e.pulseCount) {
-      tipLine(body, null, word + " " + fmt(Math.round(Math.abs(per))) + " " +
-        (e.damageType ? e.damageType + " " : "") + vital +
-        " every " + fmt(e.interval || e.duration) + "s, " + e.pulseCount + " times");
+    var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
+                        e.pulseCount ? " on application" : "");
+    if (one) tipLine(body, null, one);
+    if (e.pulseCount) {
+      var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
+                          " every " + fmt(e.interval || e.duration) + "s, " +
+                          e.pulseCount + " times");
+      if (rep) tipLine(body, null, rep);
     }
     if (v.critMultiplier && v.critMultiplier !== 1) {
       tipLine(body, null, "Critical multiplier x" + fmt(v.critMultiplier));
@@ -2088,8 +2105,9 @@ function effectTooltip(e, progs, D, level) {
   if (e.probability !== undefined && e.probability < 0.999) {
     tipLine(foot, "Chance:", fmt(e.probability * 100, 1) + "%");
   }
+  if (e.cureType) tipLine(foot, "Curable:", e.cureType);
+  else if (e.removeType) tipLine(foot, "Removed by:", e.removeType);
   var flags = [];
-  if (e.curable) flags.push("curable");
   if (e.combatOnly) flags.push("in combat only");
   if (e.removeOnDefeat) flags.push("removed on defeat");
   if (flags.length) tipLine(foot, null, titleCase(flags.join(", ")));
@@ -2102,6 +2120,34 @@ function effectTooltip(e, progs, D, level) {
   }).filter(Boolean);
   if (from.length) box.appendChild(el("div", "tipreq", "Applied by " + from.join(", ")));
   return box;
+}
+
+/* One heal or damage-over-time line. When the effect carries a vitals-per-
+   second multiplier the stored curve is a coefficient on the character's own
+   healing or damage rate, not an amount - a heal-over-time curve reading 0.1
+   is 0.1 of V, not 0 morale. Those are written with V as the variable, the
+   same way skill damage is written with W and A. */
+function vitalLine(e, v, value, vps, variance, tail) {
+  if (!value) return null;
+  var harmful = e.harmful;
+  var word = harmful ? "Deals" : "Restores";
+  var unit = e.vitalType === "Power" ? "Power" : (harmful ? "damage" : "Morale");
+  var type = e.damageType ? e.damageType + " " : "";
+  var span = el("span", "tv");
+  if (vps) {
+    var coef = Math.abs(value) * vps * (v.baseMultiplier || 1);
+    span.appendChild(el("span", null, word + " "));
+    span.appendChild(el("code", "dmg", fmt(coef, 2) + " x V"));
+    span.appendChild(el("span", null, " " + type + unit + tail));
+  } else {
+    span.appendChild(el("span", null, word + " " +
+      num(Math.abs(value) * (v.baseMultiplier || 1)) +
+      " " + type + unit + tail));
+  }
+  if (variance) {
+    span.appendChild(el("span", "muted", "  +/-" + fmt(variance * 100, 0) + "%"));
+  }
+  return span;
 }
 
 /* Only show a level box when something on the panel actually moves with it. */
@@ -2235,7 +2281,7 @@ function damageExpr(a, progs, level) {
     .filter(Boolean).join(" ");
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
   var tail = [];
-  if (cap) tail.push("max " + fmt(Math.round(cap)));
+  if (cap) tail.push("max " + num(cap));
   if (a.critMultiplier) tail.push("crit x" + fmt(a.critMultiplier));
   if (tail.length) span.appendChild(el("span", "muted", "  " + tail.join(", ")));
   return span;
