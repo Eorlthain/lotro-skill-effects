@@ -238,4 +238,53 @@ a.ess { color: #86b06b; }
 }
 .gambit .gstep:hover { border-color: var(--accent); }
 .gambit .gstep img { width: 22px; height: 22px; border-radius: 3px; }
-.gambit .gsep::before { content: "->"; color: var(--ink-3); font-size: 11px; }
+/* the arrow belongs to the step it precedes, so a wrap never leaves one
+   dangling at the end of a line */
+.gambit .gnext::before { content: "-> "; color: var(--ink-3); font-size: 11px; margin-left: -2px; }
+.gambit .gstep { padding-left: 4px; }
+.gambit .gnext { padding-left: 8px; }
+
+/* Skill tooltip: the panel the client draws in game, rebuilt from the same
+   properties. Deliberately narrow, like the real one. */
+.tip {
+  max-width: 420px; background: var(--surface-2);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  padding: 12px 14px;
+}
+.tiphead { display: flex; gap: 10px; align-items: flex-start; }
+.tiphead img { width: 34px; height: 34px; border-radius: 4px; flex: none; }
+.tipname { font: 600 15px var(--sans); color: var(--accent); }
+.tipsub { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
+.tip .gambit { margin: 10px 0 2px; }
+.tipbody, .tipdesc, .tipreq {
+  border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px;
+}
+.tip .tl { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
+.tip .tk { color: var(--ink-3); margin-right: 5px; }
+.tip .tv { color: var(--ink); }
+.tip code.dmg {
+  font: 12px var(--mono); color: var(--accent);
+  background: var(--surface-3); border-radius: 3px; padding: 1px 5px;
+}
+.tipdesc { font-size: 12.5px; color: var(--ink-2); }
+
+/* Each applied effect, quoted the way the game quotes it: its own wording,
+   then one line per property it changes, then the duration. */
+.tipeff { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; }
+.tipeffname {
+  font: 600 12.5px var(--sans); color: var(--accent); text-decoration: none;
+}
+.tipeffname:hover { text-decoration: underline; }
+.tipeffdesc { font-size: 12px; color: var(--ink-2); margin: 2px 0 4px; }
+.tipstat { font-size: 12.5px; color: var(--good); line-height: 1.5; }
+.tipstat.cond { color: var(--ink-3); }
+.tipdur { font-size: 12px; color: var(--ink-2); margin-top: 3px; }
+.tipreq { font-size: 12px; color: var(--ink-3); }
+.tipctl { margin-top: 8px; font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
+.tipctl input {
+  width: 62px; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px;
+  font: 12px var(--mono);
+}
+.tipnote { max-width: 560px; font-size: 11.5px; line-height: 1.6; margin-top: 8px; }
+.tipnote strong { color: var(--accent); font: 600 12px var(--mono); }

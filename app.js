@@ -42,6 +42,33 @@ function sideFile(name) {
 }
 function modSources() { return sideFile("modSources"); }
 function gambitData() { return sideFile("gambits"); }
+function propertyData() { return sideFile("properties"); }
+function displayTypeData() { return sideFile("displayTypes"); }
+
+/* PropertyMetaData, as the client sees it: the label a tooltip prints for a
+   game property and whether the number is a percentage. DISPLAY_TYPES is the
+   same idea for the "Skill Type:" line. EFFECT_CACHE holds the few effect
+   records the tooltip needs to expand inline. */
+var PROPS = null;
+var DISPLAY_TYPES = null;
+var EFFECT_CACHE = {};
+
+/* A tooltip quotes the effects the skill applies, so those records have to be
+   in hand before it can be drawn. */
+function preloadTipEffects(s) {
+  var ids = [];
+  (s.attacks || []).forEach(function (a) {
+    (a.targetEffects || []).forEach(function (e) { ids.push(e.id); });
+  });
+  (s.userEffects || []).forEach(function (e) { ids.push(e.id); });
+  (s.toggleEffects || []).forEach(function (e) { ids.push(e.id); });
+  ids = ids.slice(0, 6).filter(function (id) { return !EFFECT_CACHE[String(id)]; });
+  return Promise.all(ids.map(function (id) {
+    return loadRecord("effect", id).then(function (rec) {
+      if (rec) EFFECT_CACHE[String(id)] = rec;
+    });
+  }));
+}
 
 /* The Warden builds a gambit by pressing builders in order, and the tooltip
    shows the sequence as icons. The Burglar's Razor Wit line works the same way
@@ -54,8 +81,7 @@ function gambitRow(steps, label) {
   if (label) box.appendChild(el("span", "gl", label));
   steps.forEach(function (code, i) {
     var g = GAMBITS[String(code)];
-    if (i) box.appendChild(el("span", "gsep", ""));
-    var a = el("a", "gstep");
+    var a = el("a", "gstep" + (i ? " gnext" : ""));
     a.href = g ? "#/skill/" + g.skill : "#";
     var img = el("img");
     img.src = iconUrl(g ? g.icon : 0);
@@ -336,19 +362,43 @@ function trimPadding(pts) {
   return out;
 }
 
-function curvePoints(p) {
+/* The client ships curves running to level 170, past the level anyone can
+   reach. Showing that tail invites reading a number nobody can have, so a
+   level curve stops at the cap - keeping the value AT the cap by interpolating
+   a point there when the stored curve steps straight over it. Curves indexed
+   by something other than level (trait rank, item level) are left alone. */
+var LEVEL_CAP = 160;
+
+function capCurve(pts, cap) {
+  if (!cap || !pts.length || pts[pts.length - 1][0] <= cap) return pts;
+  var out = [];
+  for (var i = 0; i < pts.length; i++) {
+    if (pts[i][0] <= cap) { out.push(pts[i]); continue; }
+    if (i && pts[i - 1][0] < cap) {
+      var a = pts[i - 1], b = pts[i];
+      var t = (cap - a[0]) / ((b[0] - a[0]) || 1);
+      out.push([cap, a[1] + (b[1] - a[1]) * t]);
+    }
+    break;
+  }
+  return out.length >= 1 ? out : pts;
+}
+
+function curvePoints(p, cap) {
   if (!p) return null;
+  var pts;
   if (p.type === "linear") {
-    return trimPadding(p.points.filter(function (pt) {
+    pts = p.points.filter(function (pt) {
       return typeof pt[0] === "number" && typeof pt[1] === "number";
-    }));
-  }
-  if (p.type === "array") {
+    });
+  } else if (p.type === "array") {
     var min = p.minIndex === undefined ? 1 : p.minIndex;
-    return trimPadding(p.values.map(function (v, i) { return [min + i, v]; })
-      .filter(function (pt) { return typeof pt[1] === "number"; }));
+    pts = p.values.map(function (v, i) { return [min + i, v]; })
+      .filter(function (pt) { return typeof pt[1] === "number"; });
+  } else {
+    return null;
   }
-  return null;
+  return trimPadding(capCurve(pts, cap));
 }
 
 /* A few discrete steps read better as a table than as a line - a trait with
@@ -775,7 +825,7 @@ function arcDiagram(degrees, radius, heading, anchor, caption, centreLabel) {
 }
 
 function progChart(host, progs, progId, label) {
-  var pts = curvePoints(progs[String(progId)]);
+  var pts = curvePoints(progs[String(progId)], LEVEL_CAP);
   if (!pts || !pts.length) return false;
   host.appendChild(chart(pts, label, "Level"));
   return true;
@@ -815,13 +865,46 @@ function renderSkill(s, progs, D, MS, ET) {
 
   if (s.desc) host.appendChild(richPara("desc", s.desc));
 
-  if (s.gambit || s.gambitAdds) {
-    var gb = el("div");
-    var req = gambitRow(s.gambit, "Requires");
-    var add = gambitRow(s.gambitAdds, "Builds");
-    if (req) gb.appendChild(req);
-    if (add) gb.appendChild(add);
-    if (gb.children.length) section(host, "Gambit", gb);
+  // The tooltip goes first: it is the summary everything below expands on.
+  var wrap = el("div");
+  var lvl = topLevel(s, progs);
+  function drawTip() {
+    wrap.textContent = "";
+    wrap.appendChild(tooltipPanel(s, progs, D, lvl));
+    var ctl = el("div", "tipctl");
+    ctl.appendChild(el("span", "muted", "at level "));
+    var input = el("input");
+    input.type = "number";
+    input.min = "1";
+    input.max = String(LEVEL_CAP);
+    input.value = String(lvl);
+    input.oninput = function () {
+      var v = parseInt(input.value, 10);
+      if (!isNaN(v) && v > 0) {
+        lvl = Math.min(v, LEVEL_CAP);
+        drawTip();
+        input2focus();
+      }
+    };
+    ctl.appendChild(input);
+    wrap.appendChild(ctl);
+    if ((s.attacks || []).some(function (a) {
+      return a.implementContribution || a.damageContribution;
+    })) {
+      wrap.appendChild(damageNote(s));
+    }
+  }
+  function input2focus() {
+    // a number input has no text selection to move, so just restore focus
+    var i = wrap.querySelector("input");
+    if (i) i.focus();
+  }
+  drawTip();
+  section(host, "Tooltip", wrap);
+
+  if (s.gambitAdds) {
+    var gb = gambitRow(s.gambitAdds, "Builds");
+    if (gb) section(host, "Gambit", gb);
   }
 
   if (D) section(host, "How you get it", obtainedBlock(s, D));
@@ -982,6 +1065,33 @@ function renderEffect(e, progs, MS, D, ET) {
     ap.appendChild(richText(e.applied));
     host.appendChild(ap);
   }
+
+  var tipWrap = el("div");
+  var elvl = LEVEL_CAP;
+  function drawEffectTip() {
+    tipWrap.textContent = "";
+    tipWrap.appendChild(effectTooltip(e, progs, D, elvl));
+    if (!usesLevel(e)) return;
+    var ctl = el("div", "tipctl");
+    ctl.appendChild(el("span", "muted", "at level "));
+    var input = el("input");
+    input.type = "number";
+    input.min = "1";
+    input.max = String(LEVEL_CAP);
+    input.value = String(elvl);
+    input.oninput = function () {
+      var n = parseInt(input.value, 10);
+      if (isNaN(n) || n <= 0) return;
+      elvl = Math.min(n, LEVEL_CAP);
+      drawEffectTip();
+      var i = tipWrap.querySelector("input");
+      if (i) i.focus();
+    };
+    ctl.appendChild(input);
+    tipWrap.appendChild(ctl);
+  }
+  drawEffectTip();
+  section(host, "Tooltip", tipWrap);
 
   section(host, "At a glance", statRow([
     ["Duration", e.duration !== undefined ? secs(e.duration) : (e.permanent ? "permanent" : null)],
@@ -1601,7 +1711,8 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
   if (progs) {
     stats.forEach(function (st) {
       if (!st.progression) return;
-      var pts = curvePoints(progs[String(st.progression)]);
+      var pts = curvePoints(progs[String(st.progression)],
+                            (xLabel || "Level") === "Level" ? LEVEL_CAP : 0);
       if (pts && pts.length) wrap.appendChild(chart(pts, st.stat, xLabel));
     });
   }
@@ -1764,6 +1875,382 @@ function procBlock(s, D) {
     t.appendChild(tr);
   });
   return t;
+}
+
+/* ---------------- tooltip ---------------- */
+
+/* The client builds a skill tooltip at render time from the skill's own
+   properties - there is no stored tooltip string anywhere in the data. This
+   rebuilds the same panel from the same pieces. Every level-scaled value is
+   evaluated at the chosen level; the damage line cannot be, because it depends
+   on the character's weapon and mastery, so it is written with those as named
+   variables and explained underneath. */
+
+function progAt(progs, id, level) {
+  var pr = progs && progs[String(id)];
+  if (!pr) return null;
+  level = Math.min(level, LEVEL_CAP);
+  if (pr.type === "linear") {
+    var pts = (pr.points || []).filter(function (q) {
+      return typeof q[0] === "number" && typeof q[1] === "number";
+    });
+    if (!pts.length) return null;
+    if (level <= pts[0][0]) return pts[0][1];
+    for (var i = 1; i < pts.length; i++) {
+      if (level <= pts[i][0]) {
+        var a = pts[i - 1], b = pts[i];
+        var t = (level - a[0]) / ((b[0] - a[0]) || 1);
+        return a[1] + (b[1] - a[1]) * t;
+      }
+    }
+    return pts[pts.length - 1][1];
+  }
+  var vals = pr.values || [];
+  var min = pr.minIndex === undefined ? 1 : pr.minIndex;
+  var idx = Math.max(0, Math.min(vals.length - 1, level - min));
+  return vals.length ? vals[idx] : null;
+}
+
+/* The highest level any of this skill's own curves defines - the sensible
+   default, since that is the number a player at cap would see. */
+function topLevel(s, progs) {
+  var top = 0;
+  function consider(id) {
+    var pr = progs && progs[String(id)];
+    if (!pr) return;
+    if (pr.type === "linear") {
+      (pr.points || []).forEach(function (q) {
+        if (typeof q[0] === "number") top = Math.max(top, q[0]);
+      });
+    } else {
+      var min = pr.minIndex === undefined ? 1 : pr.minIndex;
+      top = Math.max(top, min + (pr.values || []).length - 1);
+    }
+  }
+  (s.costs || []).forEach(function (c) { consider(c.progression); });
+  (s.attacks || []).forEach(function (a) { consider(a.damageMaxProgression); });
+  return Math.min(top || LEVEL_CAP, LEVEL_CAP);
+}
+
+function tipLine(host, label, value) {
+  if (value === null || value === undefined || value === "") return;
+  var d = el("div", "tl");
+  if (label) d.appendChild(el("span", "tk", label));
+  if (value && value.nodeType) d.appendChild(value);
+  else d.appendChild(el("span", "tv", String(value)));
+  host.appendChild(d);
+}
+
+function tooltipPanel(s, progs, D, level) {
+  var box = el("div", "tip");
+
+  var head = el("div", "tiphead");
+  var img = el("img");
+  img.src = iconUrl(s.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  head.appendChild(el("div", "tipname", s.name));
+  box.appendChild(head);
+
+  // the client's top block: range on the right, then the two type lines
+  var top = el("div", "tipbody");
+  if (s.maxRange !== undefined) {
+    tipLine(top, null, (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
+                       fmt(s.maxRange) + "m Range");
+  }
+  if (s.animationMode) tipLine(top, null, titleCase(s.animationMode) + " Skill");
+  var shown = (s.displayType || []).map(function (t) {
+    return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
+  });
+  if (shown.length) tipLine(top, "Skill Type:", shown.join(", "));
+  if (top.children.length) box.appendChild(top);
+
+  if (s.gambit) {
+    var g = gambitRow(s.gambit, "Requires");
+    if (g) box.appendChild(g);
+  }
+
+  if (s.desc) {
+    var d = el("div", "tipdesc");
+    d.appendChild(richText(s.desc));
+    box.appendChild(d);
+  }
+
+  // damage, then the effects the skill puts up, with their own modifier lines
+  var body = el("div", "tipbody");
+  if (s.aeSphereRadius !== undefined) {
+    tipLine(body, null, "Area of effect, " + fmt(s.aeSphereRadius) + "m radius" +
+      (s.aeMaxTargets ? ", up to " + s.aeMaxTargets + " targets" : ""));
+  }
+  (s.attacks || []).forEach(function (a, i) {
+    var v = damageExpr(a, progs, level);
+    if (v) tipLine(body, null, v);
+  });
+  if (body.children.length) box.appendChild(body);
+
+  effectBlocks(s, level).forEach(function (blk) { box.appendChild(blk); });
+
+  var foot = el("div", "tipbody");
+  (s.costs || []).forEach(function (c) {
+    var v = c.points !== undefined ? c.points : progAt(progs, c.progression, level);
+    var txt = v === null || v === undefined
+      ? (c.percent !== undefined ? fmt(c.percent) + "% of your " + (c.type || "vital") : null)
+      : fmt(Math.round(v)) + " " + (c.type || "");
+    tipLine(foot, "Cost:", txt);
+  });
+  if (s.pipChange) {
+    var pipWord = PIP_WORDS[s.pipType] || (s.pipType ? titleCase(s.pipType) : "Pips");
+    tipLine(foot, pipWord + ":", (s.pipChange > 0 ? "+" : "") + s.pipChange);
+  }
+  if (s.induction) {
+    tipLine(foot, "Induction:", fmt(s.induction.duration) + "s" +
+      (s.induction.interruptable ? ", interruptable" : ""));
+  }
+  if (s.cooldown !== undefined) tipLine(foot, "Cooldown:", secs(s.cooldown));
+  if (foot.children.length) box.appendChild(foot);
+
+  var req = (s.obtained || []).map(function (o) {
+    var c = D && D.classes[String(o["class"])];
+    if (!c) return null;
+    if (o.how === "level") return c.name + ", level " + o.level;
+    if (o.how === "rank") return c.name + ", rank " + (o.rank || 0);
+    return c.name;
+  }).filter(Boolean);
+  if (req.length) box.appendChild(el("div", "tipreq", "Requires " + req[0]));
+  return box;
+}
+
+/* The same panel for an effect. An effect tooltip in game is the buff or debuff
+   box: what it does, for how long, and what it changes - the property lines
+   come from the same PropertyMetaData the skill panel uses. */
+function effectTooltip(e, progs, D, level) {
+  var box = el("div", "tip");
+
+  var head = el("div", "tiphead");
+  var img = el("img");
+  img.src = iconUrl(e.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var ht = el("div");
+  ht.appendChild(el("div", "tipname", e.name));
+  ht.appendChild(el("div", "tipsub",
+    (titleCase(e.kind || "") + (e.debuff ? " debuff" : e.harmful ? "" : " buff")).trim()));
+  head.appendChild(ht);
+  box.appendChild(head);
+
+  var wording = e.applied || e.descOverride || e.desc;
+  if (wording) {
+    var d = el("div", "tipdesc");
+    d.appendChild(richText(wording));
+    box.appendChild(d);
+  }
+
+  var body = el("div", "tipbody");
+  var v = e.vital;
+  if (v) {
+    var word = e.harmful ? "Deals" : "Restores";
+    var vital = e.vitalType === "Power" ? "Power" : "Morale";
+    var init = v.initial !== undefined ? v.initial
+             : progAt(progs, v.initialProgression, level);
+    if (init) {
+      tipLine(body, null, word + " " +
+        fmt(Math.round(Math.abs(init) * (v.baseMultiplier || 1))) + " " +
+        (e.damageType ? e.damageType + " " : "") + vital +
+        (e.pulseCount ? " on application" : ""));
+    }
+    var per = progAt(progs, v.perPulseProgression, level);
+    if (per && e.pulseCount) {
+      tipLine(body, null, word + " " + fmt(Math.round(Math.abs(per))) + " " +
+        (e.damageType ? e.damageType + " " : "") + vital +
+        " every " + fmt(e.interval || e.duration) + "s, " + e.pulseCount + " times");
+    }
+    if (v.critMultiplier && v.critMultiplier !== 1) {
+      tipLine(body, null, "Critical multiplier x" + fmt(v.critMultiplier));
+    }
+  }
+  (e.stats || []).forEach(function (st) {
+    var line = statLine(st);
+    if (line) body.appendChild(line);
+  });
+  if (body.children.length) box.appendChild(body);
+
+  var foot = el("div", "tipbody");
+  if (e.pulseCount && e.interval) {
+    tipLine(foot, "Duration:", secs(e.interval * e.pulseCount) +
+      "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)");
+  } else if (e.duration !== undefined) {
+    tipLine(foot, "Duration:", secs(e.duration));
+  } else if (e.permanent) {
+    tipLine(foot, "Duration:", "permanent");
+  }
+  if (e.probability !== undefined && e.probability < 0.999) {
+    tipLine(foot, "Chance:", fmt(e.probability * 100, 1) + "%");
+  }
+  var flags = [];
+  if (e.curable) flags.push("curable");
+  if (e.combatOnly) flags.push("in combat only");
+  if (e.removeOnDefeat) flags.push("removed on defeat");
+  if (flags.length) tipLine(foot, null, titleCase(flags.join(", ")));
+  if (e.equivalence) tipLine(foot, "Does not stack with:", e.equivalence);
+  if (foot.children.length) box.appendChild(foot);
+
+  var from = (e.usedBySkills || []).slice(0, 3).map(function (id) {
+    var meta = nameOf(id);
+    return meta ? meta.n : null;
+  }).filter(Boolean);
+  if (from.length) box.appendChild(el("div", "tipreq", "Applied by " + from.join(", ")));
+  return box;
+}
+
+/* Only show a level box when something on the panel actually moves with it. */
+function usesLevel(e) {
+  var v = e.vital || {};
+  if (v.initialProgression || v.perPulseProgression) return true;
+  return (e.stats || []).some(function (st) { return st.progression; });
+}
+
+/* The client's word for a class resource - the Mariner calls Balance pips
+   "Attunes", and the tooltip says so. */
+var PIP_WORDS = { Balance: "Attunes", Fervour: "Fervour", Focus: "Focus" };
+
+/* Each effect the skill puts up gets its own block, the way the game shows it:
+   the effect's own wording, then one line per property it changes, named and
+   formatted the way PropertyMetaData says, then the duration. */
+function effectBlocks(s, level) {
+  var out = [];
+  var refs = [];
+  (s.attacks || []).forEach(function (a) {
+    (a.targetEffects || []).forEach(function (e) { refs.push(e); });
+  });
+  (s.userEffects || []).forEach(function (e) { refs.push(e); });
+  (s.toggleEffects || []).forEach(function (e) { refs.push(e); });
+
+  refs.slice(0, 4).forEach(function (ref) {
+    var e = EFFECT_CACHE[String(ref.id)];
+    if (!e) return;
+    var blk = el("div", "tipeff");
+    var head = el("a", "tipeffname", e.name);
+    head.href = "#/effect/" + e.id;
+    blk.appendChild(head);
+    if (e.applied || e.descOverride) {
+      var d = el("div", "tipeffdesc");
+      d.appendChild(richText(e.applied || e.descOverride));
+      blk.appendChild(d);
+    }
+    (e.stats || []).forEach(function (st) {
+      var line = statLine(st);
+      if (line) blk.appendChild(line);
+    });
+    var dur = ref.duration !== undefined ? ref.duration : e.duration;
+    if (dur !== undefined && dur > 0) {
+      blk.appendChild(el("div", "tipdur", "Duration: " + secs(dur)));
+    } else if (e.permanent) {
+      blk.appendChild(el("div", "tipdur", "Duration: permanent"));
+    }
+    if (blk.children.length > 1) out.push(blk);
+  });
+  return out;
+}
+
+/* "+30% Advance Damage" - the label and the percentage flag both come from the
+   property's own metadata, which is how the client writes these lines. */
+function statLine(st) {
+  var meta = PROPS && PROPS[st.stat];
+  var name = meta ? meta.n : st.stat;
+  var v = st.value;
+  if (v === undefined || v === null) {
+    if (!st.progression) return null;
+    return el("div", "tipstat", "Scales with level: " + name);
+  }
+  if (v === 0 && (st.modifiedBy || []).length) {
+    // the value is nil until something grants it - the game still lists it
+    return el("div", "tipstat cond", name + "  (when traited)");
+  }
+  if (v === 0) return null;
+  var txt;
+  if (meta && meta.p) {
+    txt = (v > 0 ? "+" : "") + fmt(v * 100, 1).replace(/\.0$/, "") + "% " + name;
+  } else {
+    txt = (v > 0 ? "+" : "") + fmt(v) + " " + name;
+  }
+  if (st.op === "Subtract") txt = txt.replace(/^\+/, "-");
+  return el("div", "tipstat", txt);
+}
+
+/* The effect lines a tooltip carries: what it puts on the target, and what it
+   puts on you. Conditional ones are left out - the panel is what the client
+   would draw for an untraited character. */
+function effectLines(s) {
+  var out = [];
+  var onTarget = [];
+  (s.attacks || []).forEach(function (a) {
+    (a.targetEffects || []).forEach(function (e) { onTarget.push(e); });
+  });
+  if (onTarget.length) out.push({ label: "Applies", refs: onTarget });
+  if (s.userEffects && s.userEffects.length) {
+    out.push({ label: "On you", refs: s.userEffects });
+  }
+  if (s.toggleEffects && s.toggleEffects.length) {
+    out.push({ label: "While active", refs: s.toggleEffects });
+  }
+  return out;
+}
+
+function effectRef(refs) {
+  var span = el("span", "tv");
+  span.appendChild(linkRun(refs.slice(0, 6).map(function (e) {
+    return function () {
+      var meta = nameOf(e.id);
+      var a = el("a", "eff", meta ? meta.n : "#" + e.id);
+      a.href = "#/effect/" + e.id;
+      if (e.duration !== undefined) {
+        a.title = fmt(e.duration) + "s";
+      }
+      return a;
+    };
+  }), 3, 0));
+  return span;
+}
+
+/* Damage is the one line that cannot be resolved here: the client multiplies
+   the skill's coefficients by the character's weapon and mastery. Those two
+   are written as W and A and explained below the panel. */
+function damageExpr(a, progs, level) {
+  var parts = [];
+  var mod = a.damageModifier === undefined ? 1 : a.damageModifier;
+  if (a.implementContribution) parts.push(fmt(a.implementContribution) + " x W");
+  if (a.damageContribution) parts.push(fmt(a.damageContribution) + " x A");
+  if (!parts.length) return null;
+  var expr = parts.join(" + ");
+  if (mod !== 1) expr = fmt(mod) + " x (" + expr + ")";
+  var cap = a.damageMax !== undefined ? a.damageMax
+          : (a.damageMaxProgression ? progAt(progs, a.damageMaxProgression, level) : null);
+  var span = el("span", "tv");
+  span.appendChild(el("code", "dmg", expr));
+  var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
+           : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
+  var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
+    .filter(Boolean).join(" ");
+  span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
+  var tail = [];
+  if (cap) tail.push("max " + fmt(Math.round(cap)));
+  if (a.critMultiplier) tail.push("crit x" + fmt(a.critMultiplier));
+  if (tail.length) span.appendChild(el("span", "muted", "  " + tail.join(", ")));
+  return span;
+}
+
+function damageNote(s) {
+  var n = el("div", "muted tipnote");
+  n.innerHTML =
+    "<strong>W</strong> is what your weapon contributes at this level (its DPS "
+    + "over the skill's animation) and <strong>A</strong> is your damage-add "
+    + "from mastery. The client multiplies those by the coefficients above, "
+    + "which are the skill's own; the two variables come from your character "
+    + "and gear, so they are not in this data. Everything else on the panel is "
+    + "evaluated at the level you pick.";
+  return n;
 }
 
 function modsBlock(s, D, MS) {
@@ -2042,23 +2529,32 @@ function route() {
   detail.textContent = "";
   detail.appendChild(el("div", "muted", "loading..."));
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
-              effectTraceries(), sourceClasses(), gambitData()];
+              effectTraceries(), sourceClasses(), gambitData(), propertyData(),
+              displayTypeData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
-    detail.textContent = "";
+    PROPS = res[7] || {};
+    DISPLAY_TYPES = res[8] || {};
     var rec = res[0];
     if (!rec) {
+      detail.textContent = "";
       detail.appendChild(el("div", "empty", "No " + kind + " with id " + id + "."));
       return;
     }
+    return (kind === "skill" ? preloadTipEffects(rec) : Promise.resolve())
+      .then(function () { finish(res, rec); });
+  });
+
+  function finish(res, rec) {
+    detail.textContent = "";
     var progs = res[1] || {};
     detail.appendChild(kind === "skill"
       ? renderSkill(rec, progs, res[2], res[3], res[4])
       : renderEffect(rec, progs, res[3], res[2], res[4]));
     detail.scrollTop = 0;
     document.title = rec.name + " - LOTRO Skills and Effects";
-  });
+  }
   runSearch();
 }
 
