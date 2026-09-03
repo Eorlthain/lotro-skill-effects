@@ -222,3 +222,20 @@ ul.links li.twoline { align-items: flex-start; }
 a.ess { color: #86b06b; }
 
 .tag.slot { border-color: var(--accent-dim); color: var(--ink); }
+
+/* Gambit sequence: builder icons in press order, the way the in-game tooltip
+   shows "Requires:" on a Warden or Burglar finisher. */
+.gambit { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
+.gambit .gl {
+  font: 600 11px var(--sans); letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-3); margin-right: 4px;
+}
+.gambit .gstep {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 3px 9px 3px 4px;
+  font-size: 12.5px; text-decoration: none; color: var(--ink);
+}
+.gambit .gstep:hover { border-color: var(--accent); }
+.gambit .gstep img { width: 22px; height: 22px; border-radius: 3px; }
+.gambit .gsep::before { content: "->"; color: var(--ink-3); font-size: 11px; }

@@ -41,6 +41,88 @@ function sideFile(name) {
   return SIDE[name];
 }
 function modSources() { return sideFile("modSources"); }
+function gambitData() { return sideFile("gambits"); }
+
+/* The Warden builds a gambit by pressing builders in order, and the tooltip
+   shows the sequence as icons. The Burglar's Razor Wit line works the same way
+   with its own four. GAMBITS maps the packed code to the builder it names. */
+var GAMBITS = null;
+
+function gambitRow(steps, label) {
+  if (!steps || !steps.length || !GAMBITS) return null;
+  var box = el("div", "gambit");
+  if (label) box.appendChild(el("span", "gl", label));
+  steps.forEach(function (code, i) {
+    var g = GAMBITS[String(code)];
+    if (i) box.appendChild(el("span", "gsep", ""));
+    var a = el("a", "gstep");
+    a.href = g ? "#/skill/" + g.skill : "#";
+    var img = el("img");
+    img.src = iconUrl(g ? g.icon : 0);
+    img.alt = "";
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    a.appendChild(img);
+    a.appendChild(el("span", null, g ? g.name : "#" + code));
+    a.title = (i + 1) + ". " + (g ? g.name : code);
+    box.appendChild(a);
+  });
+  return box;
+}
+function sourceClasses() { return sideFile("sourceClasses"); }
+
+/* Which classes can reach a given trait, effect or tracery. A source with no
+   entry is unplaced, not universal - so it is always shown. Hiding happens
+   only when a source is positively known to belong to another class. */
+var SRC_CLASS = null;
+
+/* Monster-play characters have no legendary items, so no traceries and no
+   essences - listing them on a creep skill is not a near miss, it is wrong.
+   Any page scoped to creep classes drops them outright. */
+function usesGear(classIds, D) {
+  if (!classIds || !classIds.length || !D) return true;
+  for (var i = 0; i < classIds.length; i++) {
+    var c = D.classes[String(classIds[i])];
+    if (!c || c.side !== "creep") return true;
+  }
+  return false;
+}
+
+function isGearSource(id) {
+  var meta = nameOf(id);
+  return !!meta && (meta.t === "y" || meta.t === "z");
+}
+
+/* Which classes a record belongs to. A skill says so directly; an effect only
+   knows through the attribution index, which is how a creep effect page can be
+   scoped the same way a creep skill page is. */
+function ownerClasses(rec) {
+  var direct = (rec.obtained || []).map(function (o) { return o["class"]; })
+    .filter(function (c) { return c; });
+  if (direct.length) return direct;
+  var own = SRC_CLASS && SRC_CLASS[String(rec.id)];
+  return own ? own.slice() : [];
+}
+
+/* Every class that is not monster play - the allowed set for a page that only
+   Free Peoples characters can reach, such as a tracery. */
+var FREEP_IDS = null;
+function freepClasses(D) {
+  if (!FREEP_IDS && D) {
+    FREEP_IDS = Object.keys(D.classes)
+      .filter(function (k) { return D.classes[k].side !== "creep"; })
+      .map(function (k) { return parseInt(k, 10); });
+  }
+  return FREEP_IDS || [];
+}
+function reachable(id, classIds) {
+  if (!classIds || !classIds.length || !SRC_CLASS) return true;
+  var own = SRC_CLASS[String(id)];
+  if (!own) return true;
+  for (var i = 0; i < classIds.length; i++) {
+    if (own.indexOf(classIds[i]) !== -1) return true;
+  }
+  return false;
+}
 
 var TRACERY_OF = null;
 function effectTraceries() { return sideFile("effectTraceries"); }
@@ -133,11 +215,22 @@ function fmt(n, dp) {
 
 function secs(n) { return n === undefined || n === null ? "-" : fmt(n) + "s"; }
 
+/* The client writes internal names as Underscore_CamelCase with acronyms mixed
+   in. Splitting on every lowercase-uppercase boundary turns "AoE" into "Ao E",
+   so known acronyms are passed through whole. */
+var ACRONYMS = {
+  AoE: 1, AOE: 1, DoT: 1, HoT: 1, DPS: 1, HPS: 1, NPC: 1, AI: 1, UI: 1,
+  PvP: 1, PvMP: 1, MP: 1, MC: 1, LI: 1, FM: 1, CC: 1
+};
+
 function titleCase(s) {
   if (Array.isArray(s)) return s.map(titleCase).join(", ");
-  return String(s).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/^./, function (c) {
-    return c.toUpperCase();
-  });
+  return String(s).split("_").map(function (part) {
+    if (!part) return "";
+    if (ACRONYMS[part]) return part;
+    return part.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+               .replace(/^./, function (c) { return c.toUpperCase(); });
+  }).filter(Boolean).join(" ");
 }
 
 /* ---------------- search ---------------- */
@@ -177,11 +270,13 @@ function runSearch() {
     if (q) {
       var s = score(r.n, q, r.f);
       if (s < 0) continue;
-      out.push([s, r]);
+      // an internal ("DNT") entry is plumbing - keep it findable, but never
+      // ahead of the thing a player would recognise
+      out.push([s + (r.x ? 50 : 0), r]);
     } else {
       // With no query, put properly-named content first: the DAT is full of
       // internal entries like "a melee attack" that would otherwise fill the list.
-      out.push([/^[A-Z]/.test(r.n) ? 0 : 1, r]);
+      out.push([(r.x ? 2 : 0) + (/^[A-Z]/.test(r.n) ? 0 : 1), r]);
     }
   }
   out.sort(function (a, b) {
@@ -207,7 +302,8 @@ function runSearch() {
     var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
                  : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence" : "Class";
     txt.appendChild(el("div", "mt", kindWord +
-      (r.c && r.c !== "Class" ? " - " + titleCase(r.c) : "")));
+      (r.c && r.c !== "Class" ? " - " + titleCase(r.c) : "") +
+      (r.x ? " - internal" : "")));
     row.appendChild(img);
     row.appendChild(txt);
     row.onclick = function () {
@@ -452,8 +548,8 @@ function linkList(refs, kindGuess, subLine) {
 /* Under each effect a skill applies, the traceries that scale it. Answering
    "what gear affects this" without making the reader open every effect.
    Traceries only - essences are listed per property elsewhere. */
-function traceryLine(ET) {
-  if (!ET) return null;
+function traceryLine(ET, allowed) {
+  if (!ET || allowed === false) return null;
   return function (effectId) {
     var ids = ET[String(effectId)];
     if (!ids || !ids.length) return null;
@@ -686,6 +782,8 @@ function progChart(host, progs, progId, label) {
 }
 
 function renderSkill(s, progs, D, MS, ET) {
+  // a monster-play skill never has traceries or essences behind it
+  var gearOk = usesGear(ownerClasses(s), D);
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -702,6 +800,7 @@ function renderSkill(s, progs, D, MS, ET) {
   var tags = el("div", "tags");
   tags.appendChild(el("span", "tag " + (s.harmful ? "harm" : "help"),
     s.harmful ? "Harmful" : "Beneficial"));
+  if (s.internal) tags.appendChild(el("span", "tag", "Internal - never shown in game"));
   if (s.category) tags.appendChild(el("span", "tag kind", titleCase(s.category)));
   if (s.skillType) {
     (Array.isArray(s.skillType) ? s.skillType : [s.skillType]).forEach(function (k) {
@@ -716,6 +815,15 @@ function renderSkill(s, progs, D, MS, ET) {
 
   if (s.desc) host.appendChild(richPara("desc", s.desc));
 
+  if (s.gambit || s.gambitAdds) {
+    var gb = el("div");
+    var req = gambitRow(s.gambit, "Requires");
+    var add = gambitRow(s.gambitAdds, "Builds");
+    if (req) gb.appendChild(req);
+    if (add) gb.appendChild(add);
+    if (gb.children.length) section(host, "Gambit", gb);
+  }
+
   if (D) section(host, "How you get it", obtainedBlock(s, D));
 
   var range = s.maxRange !== undefined
@@ -727,7 +835,7 @@ function renderSkill(s, progs, D, MS, ET) {
     ["Threat", s.threat],
     ["Pip change", s.pipChange],
     ["Resist", s.resistCategory],
-    ["Traceries", skillTraceries(s, MS), "wide"]
+    ["Traceries", usesGear(ownerClasses(s), D) ? skillTraceries(s, MS) : null, "wide"]
   ]));
 
   section(host, "Area of effect", areaBlock(s));
@@ -800,7 +908,7 @@ function renderSkill(s, progs, D, MS, ET) {
     });
     if (hookEffects.length) {
       section(host, "Effects applied on hit",
-              linkList(hookEffects, "effect", traceryLine(ET)));
+              linkList(hookEffects, "effect", traceryLine(ET, gearOk)));
     }
   }
 
@@ -813,7 +921,9 @@ function renderSkill(s, progs, D, MS, ET) {
    ["requiredEffects", "Requires these effects"],
    ["barringEffects", "Barred by these effects"],
    ["consumedEffects", "Consumes these effects"]].forEach(function (pair) {
-    if (s[pair[0]]) section(host, pair[1], linkList(s[pair[0]], "effect", traceryLine(ET)));
+    if (s[pair[0]]) {
+      section(host, pair[1], linkList(s[pair[0]], "effect", traceryLine(ET, gearOk)));
+    }
   });
 
   if (s.combos) section(host, "Combos", linkList(s.combos.map(function (c) {
@@ -830,6 +940,10 @@ function renderSkill(s, progs, D, MS, ET) {
 }
 
 function renderEffect(e, progs, MS, D, ET) {
+  // An effect belongs to whatever classes can reach it. A creep effect has no
+  // legendary items behind it and no Free Peoples trait tree above it.
+  var owners = D ? ownerClasses(e) : [];
+  var gearOk = usesGear(owners, D);
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -848,9 +962,16 @@ function renderEffect(e, progs, MS, D, ET) {
   tags.appendChild(el("span", "tag kind", titleCase(e.kind)));
   tags.appendChild(el("span", "tag " + (e.harmful ? "harm" : "help"),
     e.harmful ? "Harmful" : "Beneficial"));
-  ["debuff", "permanent", "combatOnly", "curable", "uiVisible",
-   "removeOnDefeat", "removeOnAwaken"].forEach(function (f) {
-    if (e[f]) tags.appendChild(el("span", "tag", titleCase(f)));
+  // the client marks these "DNT" - they exist to wire other things together
+  if (e.internal) tags.appendChild(el("span", "tag", "Internal - never shown in game"));
+  // spelled out, because titleCase turns "uiVisible" into "Ui Visible"
+  var FLAG_WORDS = {
+    debuff: "Debuff", permanent: "Permanent", combatOnly: "Combat only",
+    curable: "Curable", uiVisible: "Shown in the UI",
+    removeOnDefeat: "Removed on defeat", removeOnAwaken: "Removed on waking"
+  };
+  Object.keys(FLAG_WORDS).forEach(function (f) {
+    if (e[f]) tags.appendChild(el("span", "tag", FLAG_WORDS[f]));
   });
   host.appendChild(tags);
 
@@ -867,18 +988,31 @@ function renderEffect(e, progs, MS, D, ET) {
     ["Pulses", e.pulseCount],
     ["Probability", (e.probability !== undefined && e.probability < 0.999)
       ? fmt(e.probability * 100, 1) + "%" : null],
-    ["Resist", e.resistCategory]
+    ["Resist", e.resistCategory],
+    // effects sharing an equivalence class do not stack with one another
+    ["Does not stack with", e.equivalence, "wide"]
   ]));
 
-  section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs, "Level", D));
+  section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs, "Level", D, owners));
 
   if (D && MS) section(host, "Modifiers", modsBlock(e, D, MS));
 
-  if (e.nested) section(host, "Applies these effects", linkList(e.nested, "effect", traceryLine(ET)));
+  if (e.nested) {
+    section(host, "Applies these effects",
+            linkList(e.nested, "effect", traceryLine(ET, gearOk)));
+  }
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
-  if (e.usedBySkills) section(host, "Applied by these skills", linkList(e.usedBySkills, "skill"));
+  if (e.usedBySkills) {
+    section(host, "Applied by these skills",
+            linkList(e.usedBySkills.filter(function (id) {
+              return reachable(id, owners);
+            }), "skill"));
+  }
   if (e.appliedByTraits && D) {
-    section(host, "Applied by these traits", traitList(e.appliedByTraits, D));
+    section(host, "Applied by these traits",
+            traitList(e.appliedByTraits.filter(function (id) {
+              return reachable(id, owners);
+            }), D));
   }
 
   host.appendChild(el("h3", "sec", "Source data"));
@@ -937,6 +1071,7 @@ function obtainedBlock(s, D) {
       if (o.cell) bits.push("cell " + o.cell);
       if (o.level) bits.push("level " + o.level);
       if (o.classRank) bits.push("class rank " + o.classRank);
+      if (o.setPoints) bits.push(o.setPoints + " points spent");
       if (bits.length) li.appendChild(el("span", "via", bits.join("  ")));
     }
     ul.appendChild(li);
@@ -1113,6 +1248,14 @@ function renderClass(c, D) {
       });
       hh.appendChild(ul);
 
+      // the client carries a copied set-bonus list for a few branches that have
+      // none in game; say so rather than leaving a silent gap
+      if (br.noSetBonuses) {
+        var nb = el("div", "muted");
+        nb.style.cssText = "font-size:11.5px;margin-top:6px";
+        nb.textContent = "This line has no set bonuses.";
+        hh.appendChild(nb);
+      }
       // set bonuses: awarded for points spent in this branch, not placed in it
       if (br.setBonuses && br.setBonuses.length) {
         var sb = el("div", "setbonus");
@@ -1324,11 +1467,33 @@ function linkRun(items, limit, notListed) {
   return frag;
 }
 
-function sourceFragment(prop, MS, D, limit) {
+function sourceFragment(prop, MS, D, limit, only, noGear) {
   var frag = document.createDocumentFragment();
   var src = MS && MS[prop];
   if (!src || (!src.traits && !src.effects && !src.traceries)) {
     frag.appendChild(el("span", "muted", "no source in this dataset"));
+    return frag;
+  }
+  var hidden = 0;
+  function wanted(list) {
+    return (list || []).filter(function (id) {
+      if (noGear && isGearSource(id)) { hidden++; return false; }
+      if (reachable(id, only)) return true;
+      hidden++;
+      return false;
+    });
+  }
+  src = {
+    traits: wanted(src.traits), effects: wanted(src.effects),
+    traceries: wanted(src.traceries),
+    traitsMore: src.traitsMore, effectsMore: src.effectsMore,
+    traceriesMore: src.traceriesMore
+  };
+  frag.hiddenCount = hidden;
+  if (!src.traits.length && !src.effects.length && !src.traceries.length) {
+    frag.emptyByFilter = hidden > 0;
+    frag.appendChild(el("span", "muted",
+      hidden ? "nothing this class can reach" : "no source in this dataset"));
     return frag;
   }
   var makers = [];
@@ -1364,14 +1529,17 @@ function sourceFragment(prop, MS, D, limit) {
   return frag;
 }
 
-function sourceCell(prop, MS, D) {
+function sourceCell(prop, MS, D, only, noGear) {
   var td = el("td");
   var src = MS[prop];
   if (!src) {
     td.appendChild(el("span", "muted", "no source in this dataset"));
     return td;
   }
-  td.appendChild(sourceFragment(prop, MS, D, 6));
+  var frag = sourceFragment(prop, MS, D, 6, only, noGear);
+  td.hiddenCount = frag.hiddenCount || 0;
+  td.emptyByFilter = !!frag.emptyByFilter;
+  td.appendChild(frag);
   return td;
 }
 
@@ -1379,7 +1547,7 @@ function sourceCell(prop, MS, D) {
    it grants, and this shows what those properties actually scale - across
    skills, and across other effects and traits, which read them through
    Mod_ModifierList. */
-function grantsBlock(stats, MS, progs, xLabel, D) {
+function grantsBlock(stats, MS, progs, xLabel, D, only) {
   if (!stats || !stats.length) return null;
   var wrap = el("div");
   var t = el("table", "t");
@@ -1425,7 +1593,7 @@ function grantsBlock(stats, MS, progs, xLabel, D) {
     }
     tr.appendChild(td2);
 
-    tr.appendChild(readersCell(st.stat, MS));
+    tr.appendChild(readersCell(st.stat, MS, D, only));
     t.appendChild(tr);
   });
   wrap.appendChild(t);
@@ -1442,14 +1610,17 @@ function grantsBlock(stats, MS, progs, xLabel, D) {
 
 /* Everything that reads a property: skill values, and other effects and traits
    that scale one of their own modifiers by it. */
-function readersCell(prop, MS) {
+function readersCell(prop, MS, D, only) {
   var td = el("td");
   var src = (MS && MS[prop]) || {};
   var any = false;
   var SHOW = 10;
 
   var byField = {};
-  (src.skills || []).forEach(function (u) { (byField[u[1]] = byField[u[1]] || []).push(u[0]); });
+  (src.skills || []).forEach(function (u) {
+    if (!reachable(u[0], only)) return;
+    (byField[u[1]] = byField[u[1]] || []).push(u[0]);
+  });
   Object.keys(byField).sort().forEach(function (field) {
     any = true;
     var ids = byField[field];
@@ -1468,7 +1639,9 @@ function readersCell(prop, MS) {
   });
 
   [["readEffects", "effect", "Effects"], ["readTraits", "trait", "Traits"]].forEach(function (spec) {
-    var rows = src[spec[0]] || [];
+    var rows = (src[spec[0]] || []).filter(function (r) {
+      return reachable(r[0], only);
+    });
     if (!rows.length) return;
     any = true;
     var line = el("div");
@@ -1601,31 +1774,86 @@ function modsBlock(s, D, MS) {
   });
   if (!groups.length) return null;
 
-  var t = el("table", "t");
-  t.innerHTML = "<tr><th>Value</th><th>Scaled by</th><th>Which comes from</th></tr>";
-  groups.forEach(function (pair) {
-    var g = pair[0], where = pair[1];
-    g.props.forEach(function (prop, i) {
-      var tr = el("tr");
-      var td0 = el("td");
-      if (i === 0) {
-        td0.appendChild(document.createTextNode(g.field));
-        if (where) td0.appendChild(el("span", "via", where));
-      }
-      tr.appendChild(td0);
-      var td1 = el("td");
-      td1.appendChild(el("code", "pn", prop));
-      tr.appendChild(td1);
-      tr.appendChild(sourceCell(prop, MS, D));
-      t.appendChild(tr);
-    });
-  });
+  // A class skill only lists what that class can actually reach: its own
+  // traits, its trait tree, its set bonuses and any tracery. Everything else
+  // belongs to somebody else's character and is noise on this page.
+  var owners = ownerClasses(s);
+  var noGear = !usesGear(owners, D);
   var wrap = el("div");
-  wrap.appendChild(t);
-  wrap.appendChild(el("div", "muted",
-    "A value listed here is not always active - it applies only while "
-    + "something grants the property beside it."));
-  wrap.lastChild.style.cssText = "font-size:11.5px;margin-top:8px";
+  var scoped = true;
+
+  function draw() {
+    var only = scoped ? owners : null;
+    var t = el("table", "t");
+    t.innerHTML = "<tr><th>Value</th><th>Scaled by</th><th>Which comes from</th></tr>";
+    var dropped = 0, hiddenLinks = 0;
+    groups.forEach(function (pair) {
+      var g = pair[0], where = pair[1];
+      var cells = g.props.map(function (prop) {
+        return sourceCell(prop, MS, D, only, noGear && scoped);
+      });
+      // a value whose every source belongs to other classes is not reachable
+      var reach = cells.some(function (td) { return !td.emptyByFilter; });
+      cells.forEach(function (td) { hiddenLinks += td.hiddenCount || 0; });
+      if (!reach) { dropped++; return; }
+      g.props.forEach(function (prop, i) {
+        var tr = el("tr");
+        var td0 = el("td");
+        if (i === 0) {
+          td0.appendChild(document.createTextNode(g.field));
+          if (where) td0.appendChild(el("span", "via", where));
+        }
+        tr.appendChild(td0);
+        var td1 = el("td");
+        td1.appendChild(el("code", "pn", prop));
+        tr.appendChild(td1);
+        tr.appendChild(cells[i]);
+        t.appendChild(tr);
+      });
+    });
+
+    wrap.textContent = "";
+    wrap.appendChild(t);
+    var note = el("div", "muted");
+    note.style.cssText = "font-size:11.5px;margin-top:8px";
+    note.appendChild(document.createTextNode(
+      "A value listed here is not always active - it applies only while "
+      + "something grants the property beside it."));
+    wrap.appendChild(note);
+
+    if (owners.length) {
+      var foot = el("div", "muted");
+      foot.style.cssText = "font-size:11.5px;margin-top:4px";
+      var named = owners.map(function (c) {
+        var cc = D.classes[String(c)];
+        return cc ? cc.name : null;
+      }).filter(Boolean);
+      var who = named.length === 1 ? "a " + named[0]
+              : named.length === 2 ? named.join(" or ")
+              : named.length ? named.slice(0, 2).join(", ") + " and "
+                               + (named.length - 2) + " more"
+              : "this class";
+      if (scoped) {
+        foot.appendChild(document.createTextNode(
+          "Showing only what " + who +
+          " can reach" + (noGear ? " - no traceries or essences, monster play has "
+            + "no legendary items" : "") +
+          (hiddenLinks ? (noGear ? "; " : " - ") + hiddenLinks + " source" +
+          (hiddenLinks === 1 ? "" : "s") + " hidden" : "") +
+          (dropped ? ", " + dropped + " value" + (dropped === 1 ? "" : "s") +
+           " with no reachable source" : "") + ".  "));
+      } else {
+        foot.appendChild(document.createTextNode("Showing every class.  "));
+      }
+      var a = el("a", null, scoped ? "show all" : "show only this class");
+      a.href = "#";
+      a.onclick = function (ev) { ev.preventDefault(); scoped = !scoped; draw(); return false; };
+      foot.appendChild(a);
+      wrap.appendChild(foot);
+    }
+  }
+
+  draw();
   return wrap;
 }
 
@@ -1707,7 +1935,7 @@ function renderTracery(t, D, MS, progs) {
     });
   });
   section(host, "What those properties affect",
-          grantsBlock(allStats, MS, null, "Item level", D));
+          grantsBlock(allStats, MS, null, "Item level", D, freepClasses(D)));
 
   if (cls) {
     var ul = el("ul", "links");
@@ -1761,9 +1989,11 @@ function route() {
     selected = "y" + yid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
-    Promise.all([traceryData(), classData(), modSources(), progressions()])
+    Promise.all([traceryData(), classData(), modSources(), progressions(),
+                 sourceClasses()])
       .then(function (res) {
         var T = res[0];
+        SRC_CLASS = res[4] || {};
         detail.textContent = "";
         // any member item id resolves to its family
         var rec = T[String(yid)] || T[String(TRACERY_OF[yid])];
@@ -1812,8 +2042,10 @@ function route() {
   detail.textContent = "";
   detail.appendChild(el("div", "muted", "loading..."));
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
-              effectTraceries()];
+              effectTraceries(), sourceClasses(), gambitData()];
   Promise.all(jobs).then(function (res) {
+    SRC_CLASS = res[5] || {};
+    GAMBITS = res[6] || {};
     detail.textContent = "";
     var rec = res[0];
     if (!rec) {
@@ -1839,9 +2071,12 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
     INDEX.forEach(function (e) { e.f = fold(e.n); });
     BUCKETS = META.buckets || 128;
     document.getElementById("meta").textContent =
-      META.skills.toLocaleString() + " skills, " + META.effects.toLocaleString() +
-      " effects, " + (META.traceries || 0).toLocaleString() + " traceries, " +
-      (META.essences || 0).toLocaleString() + " essences";
+      [META.skills.toLocaleString() + " skills",
+       META.effects.toLocaleString() + " effects",
+       (META.traits || 0).toLocaleString() + " traits",
+       (META.traceries || 0).toLocaleString() + " traceries",
+       (META.essences || 0).toLocaleString() + " essences",
+       ((META.classes || 0) + (META.creepClasses || 0)) + " classes"].join(", ");
     var cats = {};
     INDEX.forEach(function (r2) { if (r2.c) cats[r2.c] = 1; });
     var sel = document.getElementById("fCat");
