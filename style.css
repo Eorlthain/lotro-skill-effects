@@ -225,61 +225,87 @@ a.ess { color: #86b06b; }
 
 /* Gambit sequence: builder icons in press order, the way the in-game tooltip
    shows "Requires:" on a Warden or Burglar finisher. */
-.gambit { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 2px 0 8px; }
-.gambit .gl {
-  font: 600 11px var(--sans); letter-spacing: .06em; text-transform: uppercase;
-  color: var(--ink-3); margin-right: 4px;
-}
+/* A gambit as the client draws it: the green label, then the builder icons in
+   press order, packed together with no names and no arrows between them. */
+.gambit { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; margin: 1px 0; }
+.gambit .gl { font-size: 12px; color: var(--tip-cost); margin-right: 3px; }
 .gambit .gstep {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 3px 9px 3px 4px;
-  font-size: 12.5px; text-decoration: none; color: var(--ink);
+  display: inline-flex; line-height: 0; text-decoration: none;
+  border: 1px solid #6a6250; border-radius: 2px;
 }
 .gambit .gstep:hover { border-color: var(--accent); }
-.gambit .gstep img { width: 22px; height: 22px; border-radius: 3px; }
-/* the arrow belongs to the step it precedes, so a wrap never leaves one
-   dangling at the end of a line */
-.gambit .gnext::before { content: "-> "; color: var(--ink-3); font-size: 11px; margin-left: -2px; }
-.gambit .gstep { padding-left: 4px; }
-.gambit .gnext { padding-left: 8px; }
+.gambit .gstep img { width: 18px; height: 18px; display: block; }
 
-/* Skill tooltip: the panel the client draws in game, rebuilt from the same
-   properties. Deliberately narrow, like the real one. */
+/* Skill and effect tooltips, rebuilt from the client's own layout.
+   UILayout 0x22000000, element Skill_ExamineLayout, holds an auto-resize
+   listbox whose UICore_ListBox_entry_templates name the rows in order, and
+   each row's UICore_Text_font_colors gives the colour below. The panel is
+   229px wide there at 1024x768, scaled up here to stay readable. */
+/* The layout's stored UICore_Text_font_colors are the shipped defaults, and the
+   live client does not use all of them - it paints the header, description and
+   damage rows near-white where the layout says #666666 and #7FCCCC. The cost,
+   pip and cooldown greens DO match what the game draws, so those are taken
+   from the layout verbatim; the rest follow the client. */
+:root {
+  --tip-bg: #08090b;
+  --tip-border: #55524a;
+  --tip-name: #f2ead6;
+  --tip-stat: #d6d0c2;        /* layout says #666666; the client draws it pale */
+  --tip-desc: #d6d0c2;        /* layout says #7FCCCC; likewise */
+  --tip-damage: #e8e2d2;      /* Skill_Damage_Base is recoloured per damage type */
+  --tip-cost: #00e500;        /* Skill_VitalCost_Base, gambit rows - matches */
+  --tip-pip: #00e500;         /* Skill_Pip_Base - layout #1FE8C3, client green */
+  --tip-time: #23a723;        /* Skill_RecoveryTime_Base #009900, lifted to read */
+  --tip-trait: #c1c1c1;       /* Skill_Trait_Base */
+  --tip-resist: #1fb5c3;      /* Effect_ResistanceCategory_Base */
+  --tip-mods: #00e500;
+}
+
 .tip {
-  max-width: 420px; background: var(--surface-2);
-  border: 1px solid var(--border-strong); border-radius: var(--radius);
-  padding: 12px 14px;
+  max-width: 340px; background: var(--tip-bg);
+  border: 1px solid var(--tip-border); border-radius: 3px;
+  padding: 7px 9px 9px;
+  font-family: var(--sans); line-height: 1.45;
 }
-.tiphead { display: flex; gap: 10px; align-items: flex-start; }
-.tiphead img { width: 34px; height: 34px; border-radius: 4px; flex: none; }
-.tipname { font: 600 15px var(--sans); color: var(--accent); }
-.tipsub { font-size: 11.5px; color: var(--ink-3); margin-top: 1px; }
-.tip .gambit { margin: 10px 0 2px; }
-.tipbody, .tipdesc, .tipreq {
-  border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px;
+.tiphead { display: flex; gap: 8px; align-items: flex-start; }
+.tiphead img { width: 32px; height: 32px; border-radius: 2px; flex: none; }
+.tipname {
+  font: 600 15px var(--sans); color: var(--tip-name); letter-spacing: .02em;
 }
-.tip .tl { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; }
-.tip .tk { color: var(--ink-3); margin-right: 5px; }
-.tip .tv { color: var(--ink); }
-.tip code.dmg {
-  font: 12px var(--mono); color: var(--accent);
-  background: var(--surface-3); border-radius: 3px; padding: 1px 5px;
-}
-.tipdesc { font-size: 12.5px; color: var(--ink-2); }
+.tipsub { font-size: 11px; color: var(--tip-stat); margin-top: 1px; }
 
-/* Each applied effect, quoted the way the game quotes it: its own wording,
-   then one line per property it changes, then the duration. */
-.tipeff { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; }
-.tipeffname {
-  font: 600 12.5px var(--sans); color: var(--accent); text-decoration: none;
+/* the client draws a plain rule between groups - Separator_Base */
+.tipbody, .tipdesc, .tipreq, .tipeff {
+  border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px;
 }
+.tip .tl { font-size: 12px; color: var(--tip-stat); }
+.tip .tl.time, .tip .tl.time .tv, .tip .tl.time .tk { color: var(--tip-time); }
+.tip .tl.pip, .tip .tl.pip .tv, .tip .tl.pip .tk { color: var(--tip-pip); }
+.tip .tl.tipresist { color: var(--tip-resist); }
+.tip .tk { color: var(--tip-stat); margin-right: 4px; }
+.tip .tv { color: var(--tip-stat); }
+.tip .tipbody.cost .tl, .tip .tipbody.cost .tv { color: var(--tip-cost); }
+.tip .tipbody.cost .tl.pip, .tip .tipbody.cost .tl.pip .tv { color: var(--tip-pip); }
+.tip .tipbody.cost .tl.time, .tip .tipbody.cost .tl.time .tv { color: var(--tip-time); }
+.tip .tipbody.dmg .tl, .tip .tipbody.dmg .tv { color: var(--tip-damage); }
+.tip code.dmg {
+  font: 12px var(--mono); color: var(--tip-damage);
+  background: #16181c; border-radius: 2px; padding: 0 4px;
+}
+.tipdesc { font-size: 12px; color: var(--tip-desc); }
+.tipreq { font-size: 11.5px; color: var(--tip-trait); }
+.tip .gambit { margin: 7px 0 0; }
+.tip .gambit .gl { color: var(--tip-cost); }
+
+/* an applied effect, quoted the way the game quotes it */
+.tipeffname { font: 600 12px var(--sans); color: var(--tip-name); text-decoration: none; }
 .tipeffname:hover { text-decoration: underline; }
-.tipeffdesc { font-size: 12px; color: var(--ink-2); margin: 2px 0 4px; }
-.tipstat { font-size: 12.5px; color: var(--good); line-height: 1.5; }
-.tipstat.cond { color: var(--ink-3); }
-.tipdur { font-size: 12px; color: var(--ink-2); margin-top: 3px; }
-.tipreq { font-size: 12px; color: var(--ink-3); }
+.tipeffdesc { font-size: 12px; color: var(--tip-desc); margin: 1px 0 3px; }
+.tipstat { font-size: 12px; color: var(--tip-mods); }
+.tipstat.cond { color: #6b6b6b; }
+.tipdur { font-size: 12px; color: var(--tip-time); margin-top: 2px; }
+.tipresist { font-size: 12px; color: var(--tip-resist); }
+
 .tipctl { margin-top: 8px; font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
 .tipctl input {
   width: 62px; background: var(--surface); color: var(--ink);
@@ -288,3 +314,13 @@ a.ess { color: #86b06b; }
 }
 .tipnote { max-width: 560px; font-size: 11.5px; line-height: 1.6; margin-top: 8px; }
 .tipnote strong { color: var(--accent); font: 600 12px var(--mono); }
+
+/* an item set's bonus, worded the way the game words it */
+.setstat { color: var(--tip-mods); }
+.small { font-size: 11px; }
+
+/* the generated effect description - prose, with its references as links */
+.does { line-height: 1.6; max-width: 74ch; }
+.does .amt { color: var(--tip-mods); font-variant-numeric: tabular-nums; }
+.does .scaled { color: var(--ink-3); font-style: italic; }
+.does .summon { color: var(--tip-name); }

@@ -42,6 +42,8 @@ function sideFile(name) {
 }
 function modSources() { return sideFile("modSources"); }
 function gambitData() { return sideFile("gambits"); }
+function itemSetData() { return sideFile("itemsets"); }
+var SETS = null;
 function propertyData() { return sideFile("properties"); }
 function displayTypeData() { return sideFile("displayTypes"); }
 
@@ -75,20 +77,22 @@ function preloadTipEffects(s) {
    with its own four. GAMBITS maps the packed code to the builder it names. */
 var GAMBITS = null;
 
+/* The client shows a gambit as a bare row of builder icons after a green
+   "Requires:" - no names, no arrows. The order is the press order; the name is
+   on hover and the icon links to the builder. */
 function gambitRow(steps, label) {
   if (!steps || !steps.length || !GAMBITS) return null;
   var box = el("div", "gambit");
-  if (label) box.appendChild(el("span", "gl", label));
+  if (label) box.appendChild(el("span", "gl", label + ":"));
   steps.forEach(function (code, i) {
     var g = GAMBITS[String(code)];
-    var a = el("a", "gstep" + (i ? " gnext" : ""));
+    var a = el("a", "gstep");
     a.href = g ? "#/skill/" + g.skill : "#";
     var img = el("img");
     img.src = iconUrl(g ? g.icon : 0);
-    img.alt = "";
+    img.alt = g ? g.name : String(code);
     img.onerror = function () { this.style.visibility = "hidden"; };
     a.appendChild(img);
-    a.appendChild(el("span", null, g ? g.name : "#" + code));
     a.title = (i + 1) + ". " + (g ? g.name : code);
     box.appendChild(a);
   });
@@ -115,7 +119,8 @@ function usesGear(classIds, D) {
 
 function isGearSource(id) {
   var meta = nameOf(id);
-  return !!meta && (meta.t === "y" || meta.t === "z");
+  // traceries, essences and item sets all arrive on gear a creep never wears
+  return !!meta && (meta.t === "y" || meta.t === "z" || meta.t === "g");
 }
 
 /* Which classes a record belongs to. A skill says so directly; an effect only
@@ -166,9 +171,15 @@ function traceryData() {
   });
 }
 
+/* Kept on the side as well as returned, because a description can name a
+   trait and traits are not in the search index. */
+var CLASS_DATA = null;
 function classData() {
   return Promise.all([sideFile("classes"), sideFile("traits"), sideFile("traitTrees")])
-    .then(function (r) { return { classes: r[0], traits: r[1], trees: r[2] }; });
+    .then(function (r) {
+      CLASS_DATA = { classes: r[0], traits: r[1], trees: r[2] };
+      return CLASS_DATA;
+    });
 }
 
 /* ---------------- small helpers ---------------- */
@@ -269,7 +280,7 @@ function titleCase(s) {
 
 /* ---------------- search ---------------- */
 
-var typeOn = { s: true, e: true, c: true, y: true, z: true };
+var typeOn = { s: true, e: true, c: true, y: true, z: true, g: true };
 var catFilter = "";
 
 /* "Fleche" should find "Fleche" with the accent. Strip combining marks so the
@@ -334,7 +345,8 @@ function runSearch() {
     var txt = el("div", "txt");
     txt.appendChild(el("div", "nm", r.n));
     var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
-                 : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence" : "Class";
+                 : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence"
+                 : r.t === "g" ? "Set" : "Class";
     txt.appendChild(el("div", "mt", kindWord +
       (r.c && r.c !== "Class" ? " - " + titleCase(r.c) : "") +
       (r.x ? " - internal" : "")));
@@ -535,7 +547,8 @@ function chart(pts, label, xLabel) {
 
 function routeFor(t) {
   return t === "s" ? "skill" : t === "e" ? "effect"
-       : t === "y" ? "tracery" : t === "z" ? "essence" : "class";
+       : t === "y" ? "tracery" : t === "z" ? "essence"
+       : t === "g" ? "set" : "class";
 }
 
 function nameOf(id) {
@@ -871,9 +884,8 @@ function renderSkill(s, progs, D, MS, ET) {
   });
   host.appendChild(tags);
 
-  if (s.desc) host.appendChild(richPara("desc", s.desc));
+  // No flavour text here - the tooltip below carries it, as the game does.
 
-  // The tooltip goes first: it is the summary everything below expands on.
   var wrap = el("div");
   var lvl = topLevel(s, progs);
   function drawTip() {
@@ -1021,6 +1033,7 @@ function renderSkill(s, progs, D, MS, ET) {
     return { id: c.skill, via: c.mode };
   }), "skill"));
 
+  if (D && MS) section(host, "Effects with no chance of their own", chanceBlock(s, D, MS));
   if (D) section(host, "Effects that need a trait", conditionalBlock(s, D));
   if (D) section(host, "Procs on this skill", procBlock(s, D));
   if (D && MS) section(host, "Modifiers", modsBlock(s, D, MS));
@@ -1069,14 +1082,7 @@ function renderEffect(e, progs, MS, D, ET) {
   if (e.removeType) tags.appendChild(el("span", "tag", e.removeType));
   host.appendChild(tags);
 
-  if (e.desc) host.appendChild(richPara("desc", e.desc));
-  if (e.applied && e.applied !== e.desc) {
-    var ap = el("p", "muted");
-    ap.appendChild(document.createTextNode("On application: "));
-    ap.appendChild(richText(e.applied));
-    host.appendChild(ap);
-  }
-
+  // wording lives in the tooltip - see effectTooltip
   var tipWrap = el("div");
   var elvl = LEVEL_CAP;
   function drawEffectTip() {
@@ -1095,6 +1101,7 @@ function renderEffect(e, progs, MS, D, ET) {
       if (isNaN(n) || n <= 0) return;
       elvl = Math.min(n, LEVEL_CAP);
       drawEffectTip();
+      drawDoes();
       var i = tipWrap.querySelector("input");
       if (i) i.focus();
     };
@@ -1114,11 +1121,30 @@ function renderEffect(e, progs, MS, D, ET) {
   }
   section(host, "Tooltip", tipWrap);
 
+  // the description carries level-driven numbers too, so it follows the picker
+  var doesWrap = e.does ? el("div") : null;
+  function drawDoes() {
+    if (!doesWrap) return;
+    doesWrap.textContent = "";
+    var d = doesBlock(e.does, progs, elvl);
+    if (d) doesWrap.appendChild(d);
+  }
+  drawDoes();
+  section(host, "What it does", doesWrap);
+
+  // a pulsing effect stores the gap between pulses, not how long it runs -
+  // the duration a player cares about is the gap times the pulse count
+  var totalDur = (e.pulseCount && e.interval) ? e.interval * e.pulseCount
+               : (e.duration !== undefined ? e.duration : null);
   section(host, "At a glance", statRow([
-    ["Duration", e.duration !== undefined ? secs(e.duration) : (e.permanent ? "permanent" : null)],
-    ["Pulses", e.pulseCount],
+    ["Duration", totalDur !== null ? secs(totalDur) : (e.permanent ? "permanent" : null)],
+    ["Pulses", e.pulseCount ? e.pulseCount + " (every " + secs(e.interval) + ")"
+                            : null],
+    // an effect with no chance of its own says what has to supply one - the
+    // tooltip leaves this out, the way the client does
     ["Probability", (e.probability !== undefined && e.probability < 0.999)
       ? fmt(e.probability * 100, 1) + "%" : null],
+    ["Chance granted by", chanceSource(e), "wide"],
     ["Resist", e.resistCategory],
     // effects sharing an equivalence class do not stack with one another
     ["Does not stack with", e.equivalence, "wide"]
@@ -1131,6 +1157,26 @@ function renderEffect(e, progs, MS, D, ET) {
   if (e.nested) {
     section(host, "Applies these effects",
             linkList(e.nested, "effect", traceryLine(ET, gearOk)));
+  }
+  if (e.fromSets && e.fromSets.length) {
+    var sul = el("ul", "links");
+    e.fromSets.forEach(function (row) {
+      var meta = nameOf(row[0]);
+      var li = el("li");
+      var si = el("img");
+      si.src = iconUrl(meta ? meta.k : 0);
+      si.alt = "";
+      si.onerror = function () { this.style.visibility = "hidden"; };
+      li.appendChild(si);
+      var body = el("div");
+      var a = el("a", null, meta ? meta.n : "#" + row[0]);
+      a.href = "#/set/" + row[0];
+      body.appendChild(a);
+      body.appendChild(el("span", "via", row[1] + " piece" + (row[1] === 1 ? "" : "s")));
+      li.appendChild(body);
+      sul.appendChild(li);
+    });
+    section(host, "Granted by these set bonuses", sul);
   }
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
   if (e.usedBySkills) {
@@ -1149,6 +1195,80 @@ function renderEffect(e, progs, MS, D, ET) {
   host.appendChild(el("h3", "sec", "Source data"));
   host.appendChild(rawBlock("effect", e.id));
   return host;
+}
+
+/* The generated description: what the effect actually does, in one sentence,
+   built from its own type's properties. Chained effects are links rather than
+   nested text - the point of the whole thing is that a raid boss effect reads
+   as a line instead of a page. Level-driven numbers resolve at `level`. */
+function doesBlock(toks, progs, level) {
+  if (!toks || !toks.length) return null;
+  var host = el("div", "does");
+  toks.forEach(function (t) {
+    if (typeof t === "string") {
+      host.appendChild(document.createTextNode(t));
+      return;
+    }
+    if (t.num) { host.appendChild(numToken(t.num, progs, level)); return; }
+    if (t.e !== undefined) { host.appendChild(refLink(t.e, "effect", "eff")); return; }
+    if (t.s !== undefined) { host.appendChild(refLink(t.s, "skill", null)); return; }
+    if (t.t !== undefined) { host.appendChild(traitRef(t.t)); return; }
+    if (t.o !== undefined) {
+      // a summoned thing has no page of its own, so it gets its name and id
+      var sp = el("span", "summon", trimMarker(t.n) || ("#" + t.o));
+      sp.title = (t.w ? t.w + " " : "") + t.o;
+      host.appendChild(sp);
+      return;
+    }
+  });
+  return host;
+}
+
+function trimMarker(name) {
+  return name ? String(name).replace(/\s*\[[a-z]\]\s*$/i, "").trim() : name;
+}
+
+function refLink(id, kind, cls) {
+  var meta = nameOf(id);
+  var a = el("a", cls, meta ? meta.n : "#" + id);
+  a.href = "#/" + kind + "/" + id;
+  a.title = kind + " " + id;
+  return a;
+}
+
+function traitRef(id) {
+  // traits are not in the search index, so the name comes from the class data
+  var t = CLASS_DATA && CLASS_DATA.traits && CLASS_DATA.traits[String(id)];
+  var a = el("a", null, t ? t.name : "#" + id);
+  a.href = "#/trait/" + id;
+  a.title = "trait " + id;
+  return a;
+}
+
+/* A number in a description: a constant, a progression, or both, scaled and
+   averaged the way the game does it. Rendered live so the level picker moves
+   it. */
+function numToken(n, progs, level) {
+  var v = n.k || 0;
+  var known = n.k !== undefined;
+  if (n.p) {
+    var got = progAt(progs, n.p, level);
+    if (got === null || got === undefined) {
+      var sp = el("span", "scaled", "(scales with level)");
+      sp.title = "progression " + n.p;
+      return sp;
+    }
+    v += got;
+    known = true;
+  }
+  if (!known) return document.createTextNode("?");
+  if (n.m) v *= n.m;
+  if (n.v) v *= 1 - n.v / 2;        // the game's spread, shown at its average
+  if (n.neg) v = -v;
+  var out = n.pct ? fmt(v * 100, 1).replace(/\.0$/, "") + "%" : fmt(v, 1);
+  var span = el("span", "amt", out);
+  if (n.p) span.title = "progression " + n.p + " at level " + level;
+  return span;
 }
 
 /* ---------------- classes and traits ---------------- */
@@ -1601,7 +1721,7 @@ function linkRun(items, limit, notListed) {
 function sourceFragment(prop, MS, D, limit, only, noGear) {
   var frag = document.createDocumentFragment();
   var src = MS && MS[prop];
-  if (!src || (!src.traits && !src.effects && !src.traceries)) {
+  if (!src || (!src.traits && !src.effects && !src.traceries && !src.sets)) {
     frag.appendChild(el("span", "muted", "no source in this dataset"));
     return frag;
   }
@@ -1616,12 +1736,13 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
   }
   src = {
     traits: wanted(src.traits), effects: wanted(src.effects),
-    traceries: wanted(src.traceries),
+    traceries: wanted(src.traceries), sets: wanted(src.sets),
     traitsMore: src.traitsMore, effectsMore: src.effectsMore,
-    traceriesMore: src.traceriesMore
+    traceriesMore: src.traceriesMore, setsMore: src.setsMore
   };
   frag.hiddenCount = hidden;
-  if (!src.traits.length && !src.effects.length && !src.traceries.length) {
+  if (!src.traits.length && !src.effects.length && !src.traceries.length
+      && !src.sets.length) {
     frag.emptyByFilter = hidden > 0;
     frag.appendChild(el("span", "muted",
       hidden ? "nothing this class can reach" : "no source in this dataset"));
@@ -1655,8 +1776,17 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
       return a;
     });
   });
+  (src.sets || []).forEach(function (id) {
+    makers.push(function () {
+      var st = SETS && SETS[String(id)];
+      var a = el("a", "set", (st ? st.name : "#" + id) + " (set)");
+      a.href = "#/set/" + id;
+      return a;
+    });
+  });
   frag.appendChild(linkRun(makers, limit || 6,
-    (src.traitsMore || 0) + (src.effectsMore || 0) + (src.traceriesMore || 0)));
+    (src.traitsMore || 0) + (src.effectsMore || 0) + (src.traceriesMore || 0) +
+    (src.setsMore || 0)));
   return frag;
 }
 
@@ -1816,10 +1946,67 @@ function effectRunCell(ids) {
       var meta = nameOf(eid);
       var a = el("a", "eff", meta ? meta.n : "#" + eid);
       a.href = "#/effect/" + eid;
+      a.title = "effect " + eid;
       return a;
     };
   }), 4, 0));
   return td;
+}
+
+/* An effect whose application chance is zero cannot land on its own. The
+   client leaves it off the tooltip, and so does the panel above - but the
+   effect is real once something grants the chance, so it is listed here with
+   the property that has to supply it and whatever sets that property. */
+function chanceBlock(s, D, MS) {
+  var refs = [];
+  (s.attacks || []).forEach(function (a) {
+    ["targetEffects", "positionalEffects", "superCritEffects"].forEach(function (k) {
+      (a[k] || []).forEach(function (e) { refs.push(e); });
+    });
+  });
+  ["userEffects", "userEffectsAdditive", "toggleEffects", "critEffects"]
+    .forEach(function (k) { (s[k] || []).forEach(function (e) { refs.push(e); }); });
+
+  var rows = [];
+  var seen = {};
+  refs.forEach(function (ref) {
+    var e = EFFECT_CACHE[String(ref.id)];
+    if (!e || e.probability !== 0 || seen[ref.id]) return;
+    seen[ref.id] = 1;
+    rows.push(e);
+  });
+  if (!rows.length) return null;
+
+  var t = el("table", "t");
+  t.innerHTML = "<tr><th>Effect</th><th>Needs</th><th>Which comes from</th></tr>";
+  rows.forEach(function (e) {
+    var tr = el("tr");
+    var td0 = el("td");
+    var a = el("a", "eff", e.name);
+    a.href = "#/effect/" + e.id;
+    td0.appendChild(a);
+    if (e.duration) td0.appendChild(el("span", "via", secs(e.duration)));
+    tr.appendChild(td0);
+
+    var td1 = el("td");
+    var cs = chanceSource(e);
+    if (cs) td1.appendChild(cs);
+    else td1.appendChild(el("span", "muted", "nothing in this dataset grants it"));
+    tr.appendChild(td1);
+
+    tr.appendChild(e.probabilityFrom
+      ? sourceCell(e.probabilityFrom, MS, D, ownerClasses(s), !usesGear(ownerClasses(s), D))
+      : el("td"));
+    t.appendChild(tr);
+  });
+  var wrap = el("div");
+  wrap.appendChild(t);
+  var note = el("div", "muted");
+  note.style.cssText = "font-size:11.5px;margin-top:8px";
+  note.textContent = "These carry no application chance of their own, so the "
+    + "skill never applies them until something supplies one.";
+  wrap.appendChild(note);
+  return wrap;
 }
 
 function conditionalBlock(s, D) {
@@ -1953,9 +2140,9 @@ function topLevel(s, progs) {
   return Math.min(top || LEVEL_CAP, LEVEL_CAP);
 }
 
-function tipLine(host, label, value) {
+function tipLine(host, label, value, cls) {
   if (value === null || value === undefined || value === "") return;
-  var d = el("div", "tl");
+  var d = el("div", "tl" + (cls ? " " + cls : ""));
   if (label) d.appendChild(el("span", "tk", label));
   if (value && value.nodeType) d.appendChild(value);
   else d.appendChild(el("span", "tv", String(value)));
@@ -1980,6 +2167,15 @@ function tooltipPanel(s, progs, D, level) {
     tipLine(top, null, (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
                        fmt(s.maxRange) + "m Range");
   }
+  if (s.aeSphereRadius !== undefined) {
+    tipLine(top, null, fmt(s.aeSphereRadius) + "m Radius");
+  }
+  if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
+  if (s.aeArcDegrees) tipLine(top, null, fmt(s.aeArcDegrees) + " degree arc");
+  if (s.induction) tipLine(top, null, fmt(s.induction.duration) + "s Induction");
+  if (s.resistCategory) {
+    tipLine(top, null, "Resistance: " + titleCase(s.resistCategory));
+  }
   if (s.animationMode) tipLine(top, null, titleCase(s.animationMode) + " Skill");
   var shown = (s.displayType || []).map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
@@ -1987,32 +2183,24 @@ function tooltipPanel(s, progs, D, level) {
   if (shown.length) tipLine(top, "Skill Type:", shown.join(", "));
   if (top.children.length) box.appendChild(top);
 
-  if (s.gambit) {
-    var g = gambitRow(s.gambit, "Requires");
-    if (g) box.appendChild(g);
-  }
-
   if (s.desc) {
     var d = el("div", "tipdesc");
     d.appendChild(richText(s.desc));
     box.appendChild(d);
   }
 
-  // damage, then the effects the skill puts up, with their own modifier lines
-  var body = el("div", "tipbody");
-  if (s.aeSphereRadius !== undefined) {
-    tipLine(body, null, "Area of effect, " + fmt(s.aeSphereRadius) + "m radius" +
-      (s.aeMaxTargets ? ", up to " + s.aeMaxTargets + " targets" : ""));
-  }
-  (s.attacks || []).forEach(function (a, i) {
+  // Skill_Damage_Base, then the effect rows, then the cost group, then
+  // Skill_RecoveryTime_Base last - the order the client's template list gives.
+  var dmg = el("div", "tipbody dmg");
+  (s.attacks || []).forEach(function (a) {
     var v = damageExpr(a, progs, level);
-    if (v) tipLine(body, null, v);
+    if (v) tipLine(dmg, null, v);
   });
-  if (body.children.length) box.appendChild(body);
+  if (dmg.children.length) box.appendChild(dmg);
 
   effectBlocks(s, level).forEach(function (blk) { box.appendChild(blk); });
 
-  var foot = el("div", "tipbody");
+  var foot = el("div", "tipbody cost");
   (s.costs || []).forEach(function (c) {
     var v = c.points !== undefined ? c.points : progAt(progs, c.progression, level);
     var txt = v === null || v === undefined
@@ -2020,15 +2208,32 @@ function tooltipPanel(s, progs, D, level) {
       : num(v) + " " + (c.type || "");
     tipLine(foot, "Cost:", txt);
   });
+  if (s.gambitAdds) {
+    var ga = gambitRow(s.gambitAdds, "Builds");
+    if (ga) foot.appendChild(ga);
+  }
+
   if (s.pipChange) {
     var pipWord = PIP_WORDS[s.pipType] || (s.pipType ? titleCase(s.pipType) : "Pips");
-    tipLine(foot, pipWord + ":", (s.pipChange > 0 ? "+" : "") + s.pipChange);
+    tipLine(foot, pipWord + ":", (s.pipChange > 0 ? "+" : "") + s.pipChange, "pip");
+  }
+  if (s.gambit) {
+    var gr = gambitRow(s.gambit, "Requires");
+    if (gr) foot.appendChild(gr);
+  }
+  if (s.gambitRemoves) {
+    var grm = gambitRow(s.gambitRemoves, "Clears");
+    if (grm) foot.appendChild(grm);
+  } else if (s.clearsGambits) {
+    tipLine(foot, null, "Clears All Gambits");
   }
   if (s.induction) {
     tipLine(foot, "Induction:", fmt(s.induction.duration) + "s" +
-      (s.induction.interruptable ? ", interruptable" : ""));
+      (s.induction.interruptable ? ", interruptable" : ""), "time");
   }
-  if (s.cooldown !== undefined) tipLine(foot, "Cooldown:", secs(s.cooldown));
+  if (s.cooldown !== undefined) {
+    tipLine(foot, "Cooldown:", secs(s.cooldown), "time");
+  }
   if (foot.children.length) box.appendChild(foot);
 
   var req = (s.obtained || []).map(function (o) {
@@ -2054,19 +2259,28 @@ function effectTooltip(e, progs, D, level) {
   img.alt = "";
   img.onerror = function () { this.style.visibility = "hidden"; };
   head.appendChild(img);
-  var ht = el("div");
-  ht.appendChild(el("div", "tipname", e.name));
-  ht.appendChild(el("div", "tipsub",
-    (titleCase(e.kind || "") + (e.debuff ? " debuff" : e.harmful ? "" : " buff")).trim()));
-  head.appendChild(ht);
+  head.appendChild(el("div", "tipname", e.name));
   box.appendChild(head);
 
-  var wording = e.applied || e.descOverride || e.desc;
-  if (wording) {
-    var d = el("div", "tipdesc");
-    d.appendChild(richText(wording));
-    box.appendChild(d);
+  // Effect_ResistanceCategory_Base comes before the description in the client
+  if (e.resistCategory) {
+    var rc = el("div", "tipbody");
+    var rl = el("div", "tl tipresist");
+    rl.textContent = "Resistance: " + titleCase(e.resistCategory);
+    rc.appendChild(rl);
+    box.appendChild(rc);
   }
+
+  // the page no longer repeats these above, so the panel carries both the
+  // definition wording and the on-application line when they differ
+  var said = {};
+  [e.desc, e.descOverride, e.applied].forEach(function (w) {
+    if (!w || said[w]) return;
+    said[w] = 1;
+    var d = el("div", "tipdesc");
+    d.appendChild(richText(w));
+    box.appendChild(d);
+  });
 
   var body = el("div", "tipbody");
   var v = e.vital;
@@ -2093,32 +2307,19 @@ function effectTooltip(e, progs, D, level) {
   });
   if (body.children.length) box.appendChild(body);
 
+  // Effect_TimeDisplay_Base is the last of the client's four rows, and the
+  // panel ends there. Chance, cure type, stacking and what applies it are all
+  // on the page below - the tooltip is the tooltip.
   var foot = el("div", "tipbody");
   if (e.pulseCount && e.interval) {
     tipLine(foot, "Duration:", secs(e.interval * e.pulseCount) +
-      "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)");
+      "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)", "time");
   } else if (e.duration !== undefined) {
-    tipLine(foot, "Duration:", secs(e.duration));
+    tipLine(foot, "Duration:", secs(e.duration), "time");
   } else if (e.permanent) {
-    tipLine(foot, "Duration:", "permanent");
+    tipLine(foot, "Duration:", "permanent", "time");
   }
-  if (e.probability !== undefined && e.probability < 0.999) {
-    tipLine(foot, "Chance:", fmt(e.probability * 100, 1) + "%");
-  }
-  if (e.cureType) tipLine(foot, "Curable:", e.cureType);
-  else if (e.removeType) tipLine(foot, "Removed by:", e.removeType);
-  var flags = [];
-  if (e.combatOnly) flags.push("in combat only");
-  if (e.removeOnDefeat) flags.push("removed on defeat");
-  if (flags.length) tipLine(foot, null, titleCase(flags.join(", ")));
-  if (e.equivalence) tipLine(foot, "Does not stack with:", e.equivalence);
   if (foot.children.length) box.appendChild(foot);
-
-  var from = (e.usedBySkills || []).slice(0, 3).map(function (id) {
-    var meta = nameOf(id);
-    return meta ? meta.n : null;
-  }).filter(Boolean);
-  if (from.length) box.appendChild(el("div", "tipreq", "Applied by " + from.join(", ")));
   return box;
 }
 
@@ -2150,6 +2351,26 @@ function vitalLine(e, v, value, vps, variance, tail) {
   return span;
 }
 
+/* The property that has to supply an application chance, and the chance it
+   supplies - resolved from wherever that property is actually set, so the page
+   can say "50%" rather than only naming the property. */
+function chanceSource(e) {
+  if (!e.probabilityFrom) return null;
+  var box = el("span");
+  box.appendChild(el("code", "pn", e.probabilityFrom));
+  var vals = e.probabilityValues || [];
+  if (vals.length) {
+    var pct = vals.map(function (v) {
+      return fmt(v * 100, 1) + "%";
+    });
+    var uniq = pct.filter(function (x, i) { return pct.indexOf(x) === i; });
+    box.appendChild(el("span", null, "  gives " + uniq.join(" / ")));
+  } else {
+    box.appendChild(el("span", "muted", "  value not in this dataset"));
+  }
+  return box;
+}
+
 /* Only show a level box when something on the panel actually moves with it. */
 function usesLevel(e) {
   var v = e.vital || {};
@@ -2173,9 +2394,12 @@ function effectBlocks(s, level) {
   (s.userEffects || []).forEach(function (e) { refs.push(e); });
   (s.toggleEffects || []).forEach(function (e) { refs.push(e); });
 
-  refs.slice(0, 4).forEach(function (ref) {
+  refs.slice(0, 6).forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
     if (!e) return;
+    // no application chance of its own: it never lands unless something
+    // grants the chance, so it is listed below the panel instead
+    if (e.probability === 0) return;
     var blk = el("div", "tipeff");
     var head = el("a", "tipeffname", e.name);
     head.href = "#/effect/" + e.id;
@@ -2202,27 +2426,79 @@ function effectBlocks(s, level) {
 
 /* "+30% Advance Damage" - the label and the percentage flag both come from the
    property's own metadata, which is how the client writes these lines. */
-function statLine(st) {
+/* How much a modifier is worth, worded the way the client words it. The
+   operation matters: Multiply 0.7 on a percentage property is -30%, not +70%,
+   and Multiply on a plain property is the "x2" of "x2 Outgoing Damage".
+   `signed` is false where the wording already carries the sign. */
+function statAmount(st, meta, signed) {
+  var v = st.value;
+  var pct = meta && meta.p;
+  var n, suffix = "";
+  if (st.op === "Multiply") {
+    if (pct) { n = (v - 1) * 100; suffix = "%"; }
+    else { n = v; }
+  } else if (pct) {
+    n = v * 100; suffix = "%";
+  } else {
+    n = v;
+  }
+  if (st.op === "Subtract") n = -Math.abs(n);
+  var out = fmt(signed ? n : Math.abs(n), 1).replace(/\.0$/, "");
+  if (signed && n > 0) out = "+" + out;
+  return out + suffix;
+}
+
+/* The client's own wording for a modifier, from Mod_DescriptionOverride -
+   "Slows movement speed by 30%". Its "*" is the placeholder the value goes
+   into; a sign or "x" already in front of it means the value goes in
+   unsigned. */
+function statWording(st, meta) {
+  var d = st.description;
+  if (!d) return null;
+  if (d.indexOf("*") === -1) return d;
+  if (st.value === undefined || st.value === null) return null;
+  d = d.replace(/([-+x])[ \t]*\*/g, function (_, sign) {
+    return sign + statAmount(st, meta, false);
+  });
+  d = d.replace(/\*/g, statAmount(st, meta, true));
+  return d.replace(/[ \t]{2,}/g, " ");
+}
+
+/* One line of a tooltip: "+30% Advance Damage". The label and the percentage
+   flag come from the property's own metadata, which is how the client writes
+   these - but where the modifier carries its own wording, that wins. */
+function statLine(st, xLabel) {
   var meta = PROPS && PROPS[st.stat];
   var name = meta ? meta.n : st.stat;
   var v = st.value;
-  if (v === undefined || v === null) {
-    if (!st.progression) return null;
-    return el("div", "tipstat", "Scales with level: " + name);
+  var said = statWording(st, meta);
+  if (v === undefined || v === null || typeof v === "boolean") {
+    if (said) return multiLine("tipstat", said);
+    if (v === undefined || v === null) {
+      if (!st.progression) return null;
+      return el("div", "tipstat",
+                "Scales with " + (xLabel || "level") + ": " + name);
+    }
+    return null;
   }
   if (v === 0 && (st.modifiedBy || []).length) {
     // the value is nil until something grants it - the game still lists it
-    return el("div", "tipstat cond", name + "  (when traited)");
+    return el("div", "tipstat cond", (said || name) + "  (when traited)");
   }
   if (v === 0) return null;
-  var txt;
-  if (meta && meta.p) {
-    txt = (v > 0 ? "+" : "") + fmt(v * 100, 1).replace(/\.0$/, "") + "% " + name;
-  } else {
-    txt = (v > 0 ? "+" : "") + fmt(v) + " " + name;
-  }
-  if (st.op === "Subtract") txt = txt.replace(/^\+/, "-");
-  return el("div", "tipstat", txt);
+  if (said) return multiLine("tipstat", said);
+  return el("div", "tipstat", statAmount(st, meta, true) + " " + name);
+}
+
+/* Some wordings carry their own line breaks, written as a literal \n. */
+function multiLine(cls, str) {
+  var host = el("div", cls);
+  String(str).split(/\\n|\n/).forEach(function (part) {
+    if (!part.trim()) return;
+    if (host.childNodes.length) host.appendChild(el("br"));
+    host.appendChild(document.createTextNode(part.trim()));
+  });
+  return host.childNodes.length ? host : null;
 }
 
 /* The effect lines a tooltip carries: what it puts on the target, and what it
@@ -2487,6 +2763,93 @@ function renderTracery(t, D, MS, progs) {
   return host;
 }
 
+/* An item set: the pieces that count towards it, and what each threshold
+   grants. The effects hanging off a threshold are where every Itemset_*
+   property in the game comes from - nothing else sets them. */
+function renderSet(st, D, MS, progs) {
+  var host = el("div");
+  var head = el("div", "head");
+  var img = el("img");
+  img.src = iconUrl(st.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var h = el("div");
+  h.appendChild(el("h2", null, st.name));
+  h.appendChild(el("div", "id", "set " + st.id));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  var tags = el("div", "tags");
+  tags.appendChild(el("span", "tag kind", "Item set"));
+  if ((st.members || []).length) {
+    tags.appendChild(el("span", "tag", st.members.length + " piece" +
+      (st.members.length === 1 ? "" : "s")));
+  }
+  if (st.level) tags.appendChild(el("span", "tag", "From level " + st.level));
+  if (st.maxLevel) tags.appendChild(el("span", "tag", "Up to level " + st.maxLevel));
+  host.appendChild(tags);
+
+  if (st.desc) host.appendChild(richPara("desc", st.desc));
+
+  // one row per threshold - two pieces, four pieces, and so on
+  var tbl = el("table", "t");
+  tbl.innerHTML = "<tr><th>Pieces</th><th>Grants</th><th>Effects</th></tr>";
+  var any = false;
+  (st.bonuses || []).forEach(function (b) {
+    any = true;
+    var tr = el("tr");
+    tr.appendChild(el("td", "num", b.pieces === undefined ? "-" : String(b.pieces)));
+
+    var td1 = el("td");
+    (b.stats || []).forEach(function (x) {
+      // the game's own wording first - "+20% Frost Damage" - then the
+      // property behind it, since that is what the rest of the site links on
+      var said = statLine(x, "item level");
+      if (said) { said.className = "setstat"; td1.appendChild(said); }
+      var line = el("div", said ? "muted small" : null);
+      line.appendChild(el("code", "pn", x.stat));
+      if (!said) {
+        if (x.value !== undefined) {
+          line.appendChild(el("span", null, "  " + (x.op === "Add" && x.value > 0 ? "+" : "") +
+                                            fmt(x.value, 4)));
+        } else if (x.progression) {
+          line.appendChild(el("span", "muted", "  scales with item level"));
+        }
+      }
+      td1.appendChild(line);
+    });
+    if (!(b.stats || []).length) td1.appendChild(el("span", "muted", "-"));
+    tr.appendChild(td1);
+
+    if ((b.effects || []).length) tr.appendChild(effectRunCell(b.effects));
+    else tr.appendChild(el("td", "muted", "-"));
+    tbl.appendChild(tr);
+  });
+  if (any) section(host, "Set bonuses", tbl);
+
+  // the properties the thresholds set, and what in the game reads them
+  var allStats = [];
+  var seenStat = {};
+  (st.bonuses || []).forEach(function (b) {
+    (b.stats || []).forEach(function (x) {
+      if (!seenStat[x.stat]) { seenStat[x.stat] = 1; allStats.push(x); }
+    });
+  });
+  section(host, "What those properties affect",
+          grantsBlock(allStats, MS, null, "Item level", D, freepClasses(D)));
+
+  // items are not in the index, so the pieces are listed by id
+  if ((st.members || []).length) {
+    var run = el("div", "muted");
+    run.appendChild(linkRun(st.members.map(function (iid) {
+      return function () { return el("span", "band", String(iid)); };
+    }), 12, 0));
+    section(host, "Pieces", run);
+  }
+  return host;
+}
+
 /* ---------------- routing ---------------- */
 
 function route() {
@@ -2542,6 +2905,32 @@ function route() {
     return;
   }
 
+  var sm = /^#\/set\/(\d+)$/.exec(location.hash);
+  if (sm) {
+    var sid = parseInt(sm[1], 10);
+    selected = "g" + sid;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    Promise.all([itemSetData(), classData(), modSources(), sourceClasses(),
+                 propertyData()])
+      .then(function (res) {
+        SETS = res[0] || {};
+        SRC_CLASS = res[3] || {};
+        PROPS = res[4] || {};
+        detail.textContent = "";
+        var rec = SETS[String(sid)];
+        if (!rec) {
+          detail.appendChild(el("div", "empty", "No set with id " + sid + "."));
+          return;
+        }
+        detail.appendChild(renderSet(rec, res[1], res[2], null));
+        detail.scrollTop = 0;
+        document.title = rec.name + " - LOTRO Skills and Effects";
+      });
+    runSearch();
+    return;
+  }
+
   var cm = /^#\/(class|trait)\/(\d+)$/.exec(location.hash);
   if (cm) {
     var what = cm[1], cid = parseInt(cm[2], 10);
@@ -2576,12 +2965,13 @@ function route() {
   detail.appendChild(el("div", "muted", "loading..."));
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
               effectTraceries(), sourceClasses(), gambitData(), propertyData(),
-              displayTypeData()];
+              displayTypeData(), itemSetData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
     PROPS = res[7] || {};
     DISPLAY_TYPES = res[8] || {};
+    SETS = res[9] || {};
     var rec = res[0];
     if (!rec) {
       detail.textContent = "";
@@ -2618,6 +3008,7 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
        (META.traits || 0).toLocaleString() + " traits",
        (META.traceries || 0).toLocaleString() + " traceries",
        (META.essences || 0).toLocaleString() + " essences",
+       (META.sets || 0).toLocaleString() + " sets",
        ((META.classes || 0) + (META.creepClasses || 0)) + " classes"].join(", ");
     var cats = {};
     INDEX.forEach(function (r2) { if (r2.c) cats[r2.c] = 1; });
@@ -2644,7 +3035,7 @@ document.getElementById("q").addEventListener("input", function () {
   clearTimeout(timer);
   timer = setTimeout(runSearch, 90);
 });
-["fSkill", "fEffect", "fClass", "fTracery", "fEssence"].forEach(function (id) {
+["fSkill", "fEffect", "fClass", "fTracery", "fEssence", "fSet"].forEach(function (id) {
   var b = document.getElementById(id);
   b.onclick = function () {
     typeOn[b.dataset.t] = !typeOn[b.dataset.t];
