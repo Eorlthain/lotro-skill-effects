@@ -4,31 +4,56 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LOTRO Skills and Effects</title>
-<link rel="stylesheet" href="style.css?v=55">
+<meta name="description" content="Every LOTRO skill, effect, trait, tracery and item set, read straight out of the game client: cooldowns, damage, scaling curves, and what grants and reads every modifier property.">
+<link rel="canonical" href="https://eorlthain.github.io/lotro-skill-effects/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="LOTRO Skills and Effects">
+<meta property="og:description" content="Every LOTRO skill, effect, trait, tracery and item set, read straight out of the game client.">
+<meta name="twitter:card" content="summary">
+<meta name="theme-color" content="#14110d">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css?v=59">
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <h1>LOTRO Skills and Effects</h1>
-      <a class="navlink" href="#/classes">Browse by class</a>
+      <!-- The site name is not the page's heading. Keeping it as an h1 meant
+           a prerendered page led with "LOTRO Skills and Effects" before the
+           name of the thing the page is actually about. -->
+      <div class="brandname">LOTRO Skills and Effects</div>
+      <!-- data-route is the real address; app.js rewrites href to an absolute
+           one at boot. A relative href is resolved against whatever the URL is
+           at the moment it is clicked, so once the app had pushed /effect/123
+           these two pointed at /effect/classes. -->
+      <nav class="navlinks">
+        <a class="navlink" href="classes" data-route="classes">Browse by class</a>
+        <a class="navlink" href="changes" data-route="changes">What changed</a>
+      </nav>
       <div class="sub" id="meta">loading...</div>
     </div>
     <div class="controls">
-      <input class="search" id="q" type="search" placeholder="Search skills and effects" autocomplete="off" autofocus>
-      <div class="filters">
-        <button id="fSkill" class="on" data-t="s">Skills</button>
-        <button id="fEffect" class="on" data-t="e">Effects</button>
-        <button id="fClass" class="on" data-t="c">Classes</button>
-        <button id="fTrait" class="on" data-t="r">Traits</button>
-        <button id="fTracery" class="on" data-t="y">Traceries</button>
-        <button id="fEssence" class="on" data-t="z">Essences</button>
-        <button id="fSet" class="on" data-t="g">Sets</button>
-        <select id="fCat"><option value="">Any category</option></select>
+      <label class="sr" for="q">Search skills, effects, traits and gear</label>
+      <input class="search" id="q" type="search"
+             placeholder="Search - or s: e: r: to narrow, / to jump here"
+             autocomplete="off" autofocus>
+      <div class="filters" role="group" aria-label="Filter by kind">
+        <button id="fSkill" class="on" data-t="s" aria-pressed="true">Skills</button>
+        <button id="fEffect" class="on" data-t="e" aria-pressed="true">Effects</button>
+        <button id="fClass" class="on" data-t="c" aria-pressed="true">Classes</button>
+        <button id="fTrait" class="on" data-t="r" aria-pressed="true">Traits</button>
+        <button id="fTracery" class="on" data-t="y" aria-pressed="true">Traceries</button>
+        <button id="fEssence" class="on" data-t="z" aria-pressed="true">Essences</button>
+        <button id="fSet" class="on" data-t="g" aria-pressed="true">Sets</button>
+        <select id="fCat" aria-label="Filter by category"><option value="">Any category</option></select>
       </div>
-      <div class="count" id="count"></div>
+      <div class="count" id="count" role="status" aria-live="polite"></div>
+      <details class="prefs" id="prefsBox">
+        <summary>Your character</summary>
+        <div id="prefs"></div>
+      </details>
     </div>
-    <div class="results" id="results"></div>
+    <div class="results" id="results" role="list"></div>
   </aside>
   <main class="detail" id="detail">
     <div class="empty" id="landing">
@@ -36,11 +61,13 @@
       <p>Look up any skill to see its cooldown, range, damage and cost, and
       every effect it puts on you or your target. Effects link through to their
       own pages, so you can follow a buff back to the skills that cast it.</p>
+      <p>Every modifier property has a page of its own too: what grants it,
+      and everything in the game that reads it.</p>
       <p>Pick a class below for the full list of what you train at each level,
       and which trait in your tree unlocks the rest.</p>
     </div>
   </main>
 </div>
-<script src="app.js?v=55"></script>
+<script src="app.js?v=59"></script>
 </body>
 </html>

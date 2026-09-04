@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LOTRO Skills and Effects</title>
+<script>
+/* GitHub Pages serves this file for any address it has no file for, which is
+   every page of this site except the front one. Fold the path into a query
+   string and hand it back to index.html, which puts it back before the app
+   boots.
+
+   PATH_SEGMENTS_TO_KEEP is how much of the path is the site's own base rather
+   than a route: 1 for a project site (eorlthain.github.io/lotro-skill-effects/),
+   0 if this ever moves to a domain root. */
+var PATH_SEGMENTS_TO_KEEP = 1;
+var l = window.location;
+l.replace(
+  l.protocol + "//" + l.host +
+  l.pathname.split("/").slice(0, 1 + PATH_SEGMENTS_TO_KEEP).join("/") + "/?/" +
+  l.pathname.slice(1).split("/").slice(PATH_SEGMENTS_TO_KEEP).join("/")
+    .replace(/&/g, "~and~") +
+  (l.search ? "&" + l.search.slice(1) : "") + l.hash
+);
+</script>
+</head>
+<body>Redirecting...</body>
+</html>

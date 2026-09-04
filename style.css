@@ -34,10 +34,19 @@ a { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ---------- layout ---------- */
-.app { display: grid; grid-template-columns: 360px 1fr; height: 100vh; }
+/* dvh, not vh: on a phone vh counts the space the browser's own chrome is
+   sitting in, so the last rows of the list were always under the toolbar */
+.app { display: grid; grid-template-columns: 360px 1fr; height: 100dvh; }
 @media (max-width: 900px) {
   .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  .sidebar { max-height: 45vh; }
+  /* Search takes the screen until something is picked, and then gets out of
+     the way - a permanent 45% split left too little of either. */
+  .sidebar { max-height: 60dvh; }
+  .app.reading .sidebar { max-height: 34dvh; }
+  .app.reading .prefs, .app.reading .filters { display: none; }
+  .detail { padding: 16px 14px 48px; }
+  .head h2 { font-size: 20px; }
+  table.t { font-size: 12.5px; }
 }
 
 .sidebar {
@@ -49,9 +58,13 @@ a:hover { text-decoration: underline; }
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
 }
-.brand h1 {
+.brand .brandname {
   margin: 0; font: 600 17px/1.2 var(--serif);
   letter-spacing: .02em; color: var(--accent);
+}
+/* the heading a prerendered page leads with, before the app replaces it */
+#landing h1 {
+  margin: 0 0 6px; font: 600 22px/1.2 var(--serif); color: var(--accent);
 }
 .brand .sub { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
 
@@ -76,9 +89,17 @@ a:hover { text-decoration: underline; }
 .row {
   display: flex; gap: 9px; align-items: center;
   padding: 6px 12px; cursor: pointer; border-left: 3px solid transparent;
+  color: inherit; text-decoration: none;
 }
-.row:hover { background: var(--surface-2); }
+.row:hover { background: var(--surface-2); text-decoration: none; }
 .row.sel { background: var(--surface-3); border-left-color: var(--accent); }
+/* where the arrow keys are, as distinct from what is open */
+.row.cur { background: var(--surface-2); border-left-color: var(--accent-dim); }
+.resgroup {
+  font: 600 10.5px var(--sans); letter-spacing: .08em; text-transform: uppercase;
+  color: var(--ink-3); padding: 12px 12px 4px; border-top: 1px solid var(--border);
+  margin-top: 6px;
+}
 .row img { width: 28px; height: 28px; border-radius: 3px; background: var(--surface-3); flex: none; }
 .row .nm { font-size: 13px; line-height: 1.25; }
 .row .mt { font-size: 11px; color: var(--ink-3); }
@@ -204,9 +225,13 @@ a.trc { color: #c9a0dc; }
 .band { font: 11.5px var(--mono); color: var(--ink-2); border-bottom: 1px dotted var(--border-strong); }
 /* Item quality colours, as the game uses them. Kept as tokens so a single
    line changes each one everywhere it appears. */
+/* The game paints these on a pale tooltip. On this near-black ground the
+   stock purple is about 1.9:1 against the background - legible as a shape,
+   not as text - so rare and uncommon are lifted to the same hues at a
+   readable lightness. The others already pass. */
 :root {
-  --rar-uncommon:     #FFFF00;
-  --rar-rare:         #8B008B;
+  --rar-uncommon:     #e8e14a;
+  --rar-rare:         #d07fe0;
   --rar-incomparable: #00FFFF;
   --rar-legendary:    #FFA500;
 }
@@ -324,3 +349,72 @@ a.ess { color: #86b06b; }
 .does .amt { color: var(--tip-mods); font-variant-numeric: tabular-nums; }
 .does .scaled { color: var(--ink-3); font-style: italic; }
 .does .summon { color: var(--tip-name); }
+
+
+/* ---------- focus, for anyone not using a mouse ---------- */
+/* Nothing here had a focus style at all, so tabbing through the page was
+   invisible. :focus-visible keeps it off for mouse clicks. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.row:focus-visible { outline-offset: -2px; }
+/* a label that only a screen reader needs */
+.sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+
+.navlinks { display: flex; gap: 12px; flex-wrap: wrap; }
+
+/* ---------- your character ---------- */
+.prefs { margin-top: 10px; }
+.prefs > summary {
+  cursor: pointer; color: var(--ink-2); font-size: 12px; padding: 3px 0;
+}
+.prefs > summary:hover { color: var(--accent); }
+#prefs { padding: 6px 0 2px; display: flex; flex-direction: column; gap: 6px; }
+.pf { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pf > span { font-size: 11.5px; color: var(--ink-3); }
+.pf input, .pf select {
+  width: 116px; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--border-strong); border-radius: 4px;
+  padding: 3px 6px; font: 12px var(--mono);
+}
+.pfgear { margin-top: 2px; }
+.pfgear > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--ink-3); padding: 2px 0;
+}
+.pfgear .pf { margin-top: 5px; }
+.pfnote { font-size: 11px; line-height: 1.5; margin: 4px 0 2px; }
+/* the damage line, once the two character numbers are known */
+.resolved { color: var(--accent); font: 600 12px var(--mono); }
+
+/* ---------- the trait tree, as a tree ---------- */
+/* Cells carry their row and column; the page used to print them as a list,
+   which threw away the one thing a trait tree actually is. */
+.ttree {
+  display: grid; gap: 6px; margin: 6px 0 2px; max-width: 560px;
+  align-items: stretch;
+}
+a.tcell {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 7px 5px; text-align: center; text-decoration: none;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--ink-2); min-width: 0;
+}
+a.tcell:hover {
+  border-color: var(--accent-dim); background: var(--surface-2);
+  color: var(--ink); text-decoration: none;
+}
+a.tcell img { width: 30px; height: 30px; border-radius: 4px; background: var(--surface-3); }
+a.tcell .tn { font-size: 11px; line-height: 1.25; }
+a.tcell .tg { font: 10px var(--mono); color: var(--accent-dim); }
+
+/* ---------- property pages ---------- */
+/* code.pn is now a link to the property's own page. */
+a.pn { font: 11.5px var(--mono); color: var(--info); }
+a.pn:hover { color: var(--accent); }
+.plabel { font-size: 12.5px; color: var(--ink); margin-bottom: 1px; }
+.proprun { line-height: 1.9; max-width: 80ch; }

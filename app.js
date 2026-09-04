@@ -1,11 +1,72 @@
 /* LOTRO skill and effect database - client. All data is static JSON under data/. */
 
+/* Where this copy of the site is served from - the directory index.html sits
+   in, taken from the script tag rather than guessed, so the same build works at
+   a domain root, in a GitHub Pages project subpath, and on localhost.
+   Everything the page fetches or links to is built on it. */
+var BASE = (function () {
+  var tag = document.querySelector('script[src*="app.js"]');
+  var u = tag ? new URL(tag.getAttribute("src"), document.baseURI)
+              : new URL(location.href);
+  return u.pathname.replace(/[^/]*$/, "");
+})();
+
+/* Pages used to live behind "#/skill/123". A hash never reaches the server, so
+   all 39,540 pages were one URL as far as a crawler was concerned. These build
+   real paths instead; navigation is intercepted below and served from the data
+   already in hand, so it is still a single-page app. */
+function urlFor(route) { return BASE + String(route).replace(/^\/+/, ""); }
+function dataUrl(file) { return BASE + file; }
+function propUrl(name) { return urlFor("property/" + encodeURIComponent(name)); }
+
+/* A static host has no rewrite rule, so a deep link like /skill/123 is served
+   by 404.html, which bounces it back here as "/?/skill/123". Put the real path
+   back now - after this document's own relative URLs (style.css, app.js, the
+   icon) have already been resolved against the un-rewritten address, and
+   before anything reads the route. */
+anchorStaticLinks();
+
+(function () {
+  var q = location.search;
+  if (q.indexOf("?/") !== 0) return;
+  var parts = q.slice(2).split("&");
+  var path = parts.shift().replace(/~and~/g, "&");
+  history.replaceState({}, "", BASE + path +
+    (parts.length ? "?" + parts.join("&") : "") + location.hash);
+})();
+
+/* Any link written in index.html rather than built here. A relative href is
+   resolved against the document's current address every time it is read, and
+   this app changes that address on every navigation - so "classes" sitting in
+   the markup meant /effect/123 -> /effect/classes. Anchoring them on BASE once
+   at boot makes them behave like every link the app builds itself. */
+function anchorStaticLinks() {
+  var links = document.querySelectorAll("a[data-route]");
+  for (var i = 0; i < links.length; i++) {
+    links[i].href = urlFor(links[i].getAttribute("data-route"));
+  }
+}
+
+/* The part of the address this app routes on. */
+function routePath() {
+  var p = location.pathname;
+  try { p = decodeURIComponent(p); } catch (e) { /* keep it raw */ }
+  return (p.indexOf(BASE) === 0 ? p.slice(BASE.length) : p.replace(/^\/+/, ""))
+    .replace(/\/+$/, "");
+}
+
 var BUCKETS = 128;
 var INDEX = [];
 var META = {};
 var cache = { skill: {}, effect: {}, rawskill: {}, raweffect: {} };
-var PROG = null;
+var PROG = {};
 var selected = null;
+
+/* The landing block is written in index.html and is destroyed the first time
+   a detail page is drawn over it. Hold on to the original node so the front
+   page can be put back: the old code called location.reload() instead, which
+   threw away every data file the session had cached. */
+var LANDING = document.getElementById("landing");
 
 /* ---------------- data loading ---------------- */
 
@@ -16,29 +77,41 @@ function getJSON(url) {
   });
 }
 
+/* Cache a fetch by key, but never cache a FAILURE. Storing the fallback for
+   a rejected request left a whole 128-record shard reading "no such effect"
+   until the page was reloaded; forgetting the key instead lets the next visit
+   try again. */
+function cached(store, key, url) {
+  if (!store[key]) {
+    store[key] = getJSON(dataUrl(url)).catch(function (err) {
+      delete store[key];
+      throw err;
+    });
+  }
+  return store[key];
+}
+
 function bucketOf(id) { return id % BUCKETS; }
 
 function loadRecord(kind, id, raw) {
   // kind is "skill" or "effect"; raw picks the pruned-property shard
   var key = (raw ? "raw" : "") + kind;
   var b = bucketOf(id);
-  var store = cache[key];
-  if (!store[b]) {
-    var path = "data/" + (raw ? "raw/" : "") + kind + "/" + b + ".json";
-    store[b] = getJSON(path).catch(function () { return {}; });
-  }
-  return store[b].then(function (m) { return m[String(id)] || null; });
+  var path = "data/" + (raw ? "raw/" : "") + kind + "/" + b + ".json";
+  return cached(cache[key], b, path).then(
+    function (m) { return m[String(id)] || null; },
+    function () { return null; });
 }
 
 function progressions() {
-  if (!PROG) PROG = getJSON("data/progressions.json").catch(function () { return {}; });
-  return PROG;
+  return cached(PROG, "all", "data/progressions.json")
+    .catch(function () { return {}; });
 }
 
 var SIDE = {};
 function sideFile(name) {
-  if (!SIDE[name]) SIDE[name] = getJSON("data/" + name + ".json").catch(function () { return {}; });
-  return SIDE[name];
+  return cached(SIDE, name, "data/" + name + ".json")
+    .catch(function () { return {}; });
 }
 function modSources() { return sideFile("modSources"); }
 function gambitData() { return sideFile("gambits"); }
@@ -55,19 +128,30 @@ var PROPS = null;
 var DISPLAY_TYPES = null;
 var EFFECT_CACHE = {};
 
-/* A tooltip quotes the effects the skill applies, so those records have to be
-   in hand before it can be drawn. */
+/* A tooltip quotes the effects the skill applies, and chanceBlock below it
+   reports which of them carry no application chance of their own. Both read
+   EFFECT_CACHE, so every effect either could name has to be in hand before the
+   page is drawn. Loading only the first six of three of the slots meant
+   chanceBlock silently skipped effects on 79 skills - and, because the cache
+   is never cleared, gave a different answer depending on what had been browsed
+   before. A skill names at most ten distinct effects, so this stays bounded. */
 function preloadTipEffects(s) {
-  var ids = [];
+  var ids = {};
   (s.attacks || []).forEach(function (a) {
-    (a.targetEffects || []).forEach(function (e) { ids.push(e.id); });
+    ["targetEffects", "positionalEffects", "superCritEffects"].forEach(function (k) {
+      (a[k] || []).forEach(function (e) { ids[e.id] = 1; });
+    });
   });
-  (s.userEffects || []).forEach(function (e) { ids.push(e.id); });
-  (s.toggleEffects || []).forEach(function (e) { ids.push(e.id); });
-  ids = ids.slice(0, 6).filter(function (id) { return !EFFECT_CACHE[String(id)]; });
-  return Promise.all(ids.map(function (id) {
-    return loadRecord("effect", id).then(function (rec) {
-      if (rec) EFFECT_CACHE[String(id)] = rec;
+  ["userEffects", "userEffectsAdditive", "toggleEffects", "critEffects"]
+    .forEach(function (k) {
+      (s[k] || []).forEach(function (e) {
+        ids[typeof e === "number" ? e : e.id] = 1;
+      });
+    });
+  var want = Object.keys(ids).filter(function (id) { return !EFFECT_CACHE[id]; });
+  return Promise.all(want.map(function (id) {
+    return loadRecord("effect", parseInt(id, 10)).then(function (rec) {
+      if (rec) EFFECT_CACHE[String(rec.id)] = rec;
     });
   }));
 }
@@ -86,8 +170,9 @@ function gambitRow(steps, label) {
   if (label) box.appendChild(el("span", "gl", label + ":"));
   steps.forEach(function (code, i) {
     var g = GAMBITS[String(code)];
-    var a = el("a", "gstep");
-    a.href = g ? "#/skill/" + g.skill : "#";
+    // href="#" would route to the landing page; an unknown builder is not a link
+    var a = el(g ? "a" : "span", "gstep");
+    if (g) a.href = urlFor("skill/" + g.skill);
     var img = el("img");
     img.src = iconUrl(g ? g.icon : 0);
     img.alt = g ? g.name : String(code);
@@ -184,6 +269,16 @@ function classData() {
 
 /* ---------------- small helpers ---------------- */
 
+/* A property name used to be inert text. It is the hub of the whole dataset -
+   everything that grants it and everything that reads it hangs off it - so it
+   is a link to its own page now. Kept looking like code, because it is. */
+function propCode(name) {
+  var a = el("a", "pn");
+  a.href = propUrl(name);
+  a.textContent = name;
+  return a;
+}
+
 function el(tag, cls, text) {
   var n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -197,7 +292,9 @@ function esc(s) {
   });
 }
 
-function iconUrl(id) { return id ? "icons/" + id + ".png" : "icons/blank.png"; }
+function iconUrl(id) {
+  return BASE + "icons/" + (id ? id : "blank") + ".png";
+}
 
 /* The DAT stores flavour text with three bits of markup and nothing else: a
    literal two-character "\n" for a line break, <rgb=#RRGGBB>...</rgb> for
@@ -321,20 +418,80 @@ function score(name, q, folded) {
   return -1;
 }
 
+/* Description text, fetched the first time anybody searches. 1.4MB is far too
+   much to put in front of first paint, and most visits never need it - but
+   name-only search misses most of what a player actually asks for ("which
+   skills mention bleed"). */
+var TEXT = null;
+var TEXT_STATE = "idle";
+function searchText() {
+  if (TEXT_STATE === "idle") {
+    TEXT_STATE = "loading";
+    sideFile("searchText").then(function (t) {
+      TEXT = t || {};
+      TEXT_STATE = "ready";
+      runSearch();
+    });
+  }
+  return TEXT;
+}
+
+/* "s:" or "skill:" in front of a query means only that kind, for this query
+   alone - quicker than reaching for the filter buttons and back again. */
+var TYPE_WORDS = {
+  s: "s", skill: "s", skills: "s",
+  e: "e", effect: "e", effects: "e",
+  c: "c", "class": "c", classes: "c",
+  r: "r", trait: "r", traits: "r",
+  y: "y", tracery: "y", traceries: "y",
+  z: "z", essence: "z", essences: "z",
+  g: "g", set: "g", sets: "g",
+  p: "p", prop: "p", property: "p", properties: "p"
+};
+
+/* An id can be typed either way round. Every page prints both forms in its
+   header ("skill 1879049328 / 0x70000470"), and pasting either back into the
+   box used to find nothing at all.
+
+   "70000470" is ambiguous - decimal and hex are both readings - so both are
+   offered and whichever one names a real record wins. */
+function idsFromQuery(q) {
+  var out = [];
+  var hex = /^0x([0-9a-f]+)$/i.exec(q);
+  if (hex) return [parseInt(hex[1], 16)];
+  if (/^\d{6,}$/.test(q)) out.push(parseInt(q, 10));
+  if (/^[0-9a-f]{6,10}$/i.test(q)) out.push(parseInt(q, 16));
+  return out.length ? out : null;
+}
+
 function runSearch() {
-  var q = fold(document.getElementById("q").value.trim());
+  var raw = document.getElementById("q").value.trim();
+  var typeWord = null;
+  var pref = /^([a-z]+):\s*(.*)$/i.exec(raw);
+  if (pref && TYPE_WORDS[pref[1].toLowerCase()]) {
+    typeWord = TYPE_WORDS[pref[1].toLowerCase()];
+    raw = pref[2];
+  }
+  var q = fold(raw.trim());
   // Always worth trying, even when the query itself has no punctuation: the
   // point is to reach names that do. Only a query that is nothing but
   // punctuation has no squashed form to match with.
   var qs = squash(q) || null;
-  var numeric = /^\d{6,}$/.test(q) ? parseInt(q, 10) : null;
+  var numeric = idsFromQuery(q);
   var out = [];
+  var byText = [];
+  // A class picked in the sidebar narrows every list on the site - but only
+  // once the attribution index is in hand. Without that guard, a filter
+  // restored from a previous visit rejected everything on the first paint,
+  // because belongsTo cannot say yes to anything before SRC_CLASS loads.
+  var only = (PREFS.cls && SRC_CLASS) ? PREFS.cls : null;
   for (var i = 0; i < INDEX.length; i++) {
     var r = INDEX[i];
-    if (!typeOn[r.t]) continue;
+    if (typeWord ? r.t !== typeWord : !typeOn[r.t]) continue;
     if (catFilter && r.c !== catFilter) continue;
+    if (only && !belongsTo(r.i, only)) continue;
     if (numeric !== null) {
-      if (r.i === numeric) out.push([0, r]);
+      if (numeric.indexOf(r.i) !== -1) out.push([0, r]);
       continue;
     }
     if (q) {
@@ -345,7 +502,15 @@ function runSearch() {
         var s2 = score(r.n, qs, r.q);
         if (s2 >= 0 && (s < 0 || s2 + 0.25 < s)) s = s2 + 0.25;
       }
-      if (s < 0) continue;
+      if (s < 0) {
+        // no name match: the description is the second place to look
+        var T = searchText();
+        if (T && q.length >= 3) {
+          var blob = T[String(r.i)];
+          if (blob && blob.indexOf(q) >= 0) byText.push([r.x ? 1 : 0, r]);
+        }
+        continue;
+      }
       // an internal ("DNT") entry is plumbing - keep it findable, but never
       // ahead of the thing a player would recognise
       out.push([s + (r.x ? 50 : 0), r]);
@@ -359,15 +524,21 @@ function runSearch() {
     if (a[0] !== b[0]) return a[0] - b[0];
     return a[1].n.localeCompare(b[1].n);
   });
+  byText.sort(function (a, b) {
+    if (a[0] !== b[0]) return a[0] - b[0];
+    return a[1].n.localeCompare(b[1].n);
+  });
   var total = out.length;
+  var textTotal = byText.length;
   out = out.slice(0, 300);
+  byText = byText.slice(0, Math.max(0, 300 - out.length));
 
   var box = document.getElementById("results");
   box.textContent = "";
   var frag = document.createDocumentFragment();
-  out.forEach(function (pair) {
-    var r = pair[1];
-    var row = el("div", "row" + (selected === r.t + r.i ? " sel" : ""));
+  function drawRow(r) {
+    var row = el("a", "row" + (selected === r.t + r.i ? " sel" : ""));
+    row.href = urlFor(routeFor(r.t) + "/" + r.i);
     var img = el("img");
     img.src = iconUrl(r.k);
     img.loading = "lazy";
@@ -384,14 +555,45 @@ function runSearch() {
     txt.appendChild(el("div", "mt", kindWord + cat + (r.x ? " - internal" : "")));
     row.appendChild(img);
     row.appendChild(txt);
-    row.onclick = function () {
-      location.hash = "#/" + routeFor(r.t) + "/" + r.i;
-    };
     frag.appendChild(row);
-  });
+  }
+  out.forEach(function (pair) { drawRow(pair[1]); });
+  if (byText.length) {
+    var sep = el("div", "resgroup");
+    sep.textContent = "found in the description";
+    frag.appendChild(sep);
+    byText.forEach(function (pair) { drawRow(pair[1]); });
+  }
   box.appendChild(frag);
-  document.getElementById("count").textContent =
-    total + " match" + (total === 1 ? "" : "es") + (total > 300 ? ", showing 300" : "");
+  CURSOR = -1;
+  var bits = [total.toLocaleString() + " match" + (total === 1 ? "" : "es")];
+  if (textTotal) bits.push(textTotal.toLocaleString() + " by description");
+  if (total + textTotal > 300) bits.push("showing 300");
+  if (TEXT_STATE === "loading") bits.push("loading descriptions...");
+  if (PREFS.cls) {
+    var cn = CLASS_DATA && CLASS_DATA.classes[String(PREFS.cls)];
+    bits.push((cn ? cn.name : "one class") + " only");
+  }
+  document.getElementById("count").textContent = bits.join(", ");
+}
+
+/* Arrow keys move through the results and Enter opens one, so a search can be
+   finished without leaving the keyboard. */
+var CURSOR = -1;
+function moveCursor(step) {
+  var rows = document.querySelectorAll("#results .row");
+  if (!rows.length) return;
+  CURSOR += step;
+  if (CURSOR < 0) CURSOR = rows.length - 1;
+  if (CURSOR >= rows.length) CURSOR = 0;
+  for (var i = 0; i < rows.length; i++) rows[i].classList.toggle("cur", i === CURSOR);
+  // not every engine has it, and a missing scroll is never worth an exception
+  if (rows[CURSOR].scrollIntoView) rows[CURSOR].scrollIntoView({ block: "nearest" });
+}
+function openCursor() {
+  var rows = document.querySelectorAll("#results .row");
+  var row = rows[CURSOR] || rows[0];
+  if (row) navigate(new URL(row.href).pathname);
 }
 
 /* ---------------- progression chart ---------------- */
@@ -403,6 +605,10 @@ function runSearch() {
    entry that reaches the final value, and remember how far the stored table
    ran so a caption can say the value holds. */
 function trimPadding(pts) {
+  // 20 progressions hold lists of trait NAMES rather than numbers, so nothing
+  // survives the numeric filter above and there is no curve to trim. Reading
+  // pts[-1] here took the whole page down.
+  if (!pts.length) return pts;
   var end = pts.length;
   while (end > 2 && pts[end - 1][1] === 0) end--;
   var last = pts[end - 1][1];
@@ -419,6 +625,9 @@ function trimPadding(pts) {
    level curve stops at the cap - keeping the value AT the cap by interpolating
    a point there when the stored curve steps straight over it. Curves indexed
    by something other than level (trait rank, item level) are left alone. */
+/* Set from meta.json at boot - the extractor owns it now, so a cap raise is a
+   rebuild rather than a code change. The literal is only the fallback for a
+   meta.json written before the field existed. */
 var LEVEL_CAP = 160;
 
 function capCurve(pts, cap) {
@@ -450,6 +659,9 @@ function curvePoints(p, cap) {
   } else {
     return null;
   }
+  // nothing numeric in it - there is no curve, and every caller treats a null
+  // the same way it treats one it cannot draw
+  if (!pts.length) return null;
   return trimPadding(capCurve(pts, cap));
 }
 
@@ -490,7 +702,14 @@ function chart(pts, label, xLabel) {
   var ys = pts.map(function (p) { return p[1]; });
   var x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
   var y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
-  if (y0 > 0) y0 = 0;
+  // Forcing the baseline to zero flattened every curve living in a narrow band
+  // - a crit multiplier going 1.0 to 1.15 drew as a horizontal line. Keep zero
+  // where the data comes near it anyway, and otherwise show the band.
+  if (y0 > 0 && y0 <= (y1 - y0) * 0.5) y0 = 0;
+  else if (y0 > 0) {
+    var pad = (y1 - y0) * 0.12 || Math.abs(y0) * 0.05;
+    y0 -= pad; y1 += pad;
+  }
   if (y1 === y0) y1 = y0 + 1;
   var px = function (x) { return L + (x - x0) / (x1 - x0 || 1) * (W - L - R); };
   var py = function (y) { return H - B - (y - y0) / (y1 - y0) * (H - T - B); };
@@ -583,9 +802,15 @@ function routeFor(t) {
        : t === "g" ? "set" : t === "r" ? "trait" : "class";
 }
 
+/* Built once at boot. This was a linear scan over all 39,540 index entries,
+   run once per link rendered and twice per comparison in every sort. */
+var BY_ID = null;
 function nameOf(id) {
-  for (var i = 0; i < INDEX.length; i++) if (INDEX[i].i === id) return INDEX[i];
-  return null;
+  if (!BY_ID) {
+    BY_ID = {};
+    for (var i = 0; i < INDEX.length; i++) BY_ID[INDEX[i].i] = INDEX[i];
+  }
+  return BY_ID[id] || null;
 }
 
 /* Traits have their own list rather than linkList's, because the class data
@@ -602,7 +827,7 @@ function traitList(ids, D) {
     li.appendChild(img);
     var body = el("div");
     var a = el("a", null, t ? t.name : "#" + id);
-    a.href = "#/trait/" + id;
+    a.href = urlFor("trait/" + id);
     body.appendChild(a);
     if (t && t.nature) {
       body.appendChild(el("span", "via", titleCase(String(t.nature).replace("Class_", ""))));
@@ -628,7 +853,7 @@ function linkList(refs, kindGuess, subLine) {
     var body = el("div");
     var a = el("a", null, meta ? meta.n : "#" + id);
     var kind = meta ? routeFor(meta.t) : kindGuess;
-    a.href = "#/" + kind + "/" + id;
+    a.href = urlFor("" + kind + "/" + id);
     body.appendChild(a);
     var bits = [];
     if (r && r.duration !== undefined) bits.push(fmt(r.duration) + "s");
@@ -661,7 +886,7 @@ function traceryLine(ET, allowed) {
       return function () {
         var meta = nameOf(tid);
         var a = el("a", "trc", meta ? meta.n : "#" + tid);
-        a.href = "#/tracery/" + tid;
+        a.href = urlFor("tracery/" + tid);
         return a;
       };
     }), 4, 0));
@@ -671,8 +896,10 @@ function traceryLine(ET, allowed) {
 
 function section(host, title, node) {
   if (!node) return;
-  // an empty <ul>/<table> body means there was nothing to show after all
+  // an empty <ul>, or a table with nothing under its header row, means there
+  // was nothing to show after all
   if (node.tagName === "UL" && !node.children.length) return;
+  if (node.tagName === "TABLE" && node.rows.length <= 1) return;
   host.appendChild(el("h3", "sec", title));
   host.appendChild(node);
 }
@@ -730,7 +957,7 @@ function skillTraceries(s, MS) {
   box.appendChild(linkRun(ids.map(function (tid) {
     return function () {
       var a = el("a", "trc", nameOf(tid).n);
-      a.href = "#/tracery/" + tid;
+      a.href = urlFor("tracery/" + tid);
       return a;
     };
   }), 6, 0));
@@ -918,7 +1145,7 @@ function renderSkill(s, progs, D, MS, ET) {
   // No flavour text here - the tooltip below carries it, as the game does.
 
   var wrap = el("div");
-  var lvl = topLevel(s, progs);
+  var lvl = preferredLevel(topLevel(s, progs));
   function drawTip() {
     wrap.textContent = "";
     wrap.appendChild(tooltipPanel(s, progs, D, lvl));
@@ -985,9 +1212,11 @@ function renderSkill(s, progs, D, MS, ET) {
         '<td class="num">' + fmt(c.points) + "</td>" +
         '<td class="num">' + (c.percent === undefined ? "-" : fmt(c.percent) + "%") + "</td>" +
         '<td class="num">' + (c.progression ? "progression " + c.progression : "-") + "</td>" +
-        "<td>" + (c.mods || []).map(function (m) {
-          return '<code class="pn">' + esc(m) + "</code>";
-        }).join(" ") + "</td>";
+        "<td></td>";
+      // the modifier cell holds links, so it is built rather than templated
+      tr.cells[4].appendChild(linkRun((c.mods || []).map(function (m) {
+        return function () { return propCode(m); };
+      }), 6, 0));
       t.appendChild(tr);
     });
     section(host, "Cost", t);
@@ -1116,7 +1345,7 @@ function renderEffect(e, progs, MS, D, ET) {
 
   // wording lives in the tooltip - see effectTooltip
   var tipWrap = el("div");
-  var elvl = LEVEL_CAP;
+  var elvl = preferredLevel(LEVEL_CAP);
   function drawEffectTip() {
     tipWrap.textContent = "";
     tipWrap.appendChild(effectTooltip(e, progs, D, elvl));
@@ -1191,6 +1420,14 @@ function renderEffect(e, progs, MS, D, ET) {
     section(host, "Applies these effects",
             linkList(e.nested, "effect", traceryLine(ET, gearOk)));
   }
+  // The same "Effect*" keys also name skills and traits. They used to be
+  // listed as effects, which sent the reader to a page that does not exist.
+  if (e.grantsSkills) {
+    section(host, "Grants these skills", linkList(e.grantsSkills, "skill"));
+  }
+  if (e.grantsTraits && D) {
+    section(host, "Grants these traits", traitList(e.grantsTraits, D));
+  }
   if (e.fromSets && e.fromSets.length) {
     var sul = el("ul", "links");
     e.fromSets.forEach(function (row) {
@@ -1203,7 +1440,7 @@ function renderEffect(e, progs, MS, D, ET) {
       li.appendChild(si);
       var body = el("div");
       var a = el("a", null, meta ? meta.n : "#" + row[0]);
-      a.href = "#/set/" + row[0];
+      a.href = urlFor("set/" + row[0]);
       body.appendChild(a);
       body.appendChild(el("span", "via", row[1] + " piece" + (row[1] === 1 ? "" : "s")));
       li.appendChild(body);
@@ -1264,7 +1501,7 @@ function trimMarker(name) {
 function refLink(id, kind, cls) {
   var meta = nameOf(id);
   var a = el("a", cls, meta ? meta.n : "#" + id);
-  a.href = "#/" + kind + "/" + id;
+  a.href = urlFor("" + kind + "/" + id);
   a.title = kind + " " + id;
   return a;
 }
@@ -1273,7 +1510,7 @@ function traitRef(id) {
   var t = CLASS_DATA && CLASS_DATA.traits && CLASS_DATA.traits[String(id)];
   var meta = t ? null : nameOf(id);
   var a = el("a", null, t ? t.name : (meta ? meta.n : "#" + id));
-  a.href = "#/trait/" + id;
+  a.href = urlFor("trait/" + id);
   a.title = "trait " + id;
   return a;
 }
@@ -1314,7 +1551,7 @@ function traitLink(t, extra) {
   img.onerror = function () { this.style.visibility = "hidden"; };
   li.appendChild(img);
   var a = el("a", null, t ? t.name : "trait");
-  a.href = "#/trait/" + (t ? t.id : 0);
+  a.href = urlFor("trait/" + (t ? t.id : 0));
   li.appendChild(a);
   if (extra) li.appendChild(el("span", "via", extra));
   return li;
@@ -1334,7 +1571,7 @@ function obtainedBlock(s, D) {
     li.appendChild(img);
     if (cls) {
       var ca = el("a", null, cls.name);
-      ca.href = "#/class/" + cls.id;
+      ca.href = urlFor("class/" + cls.id);
       li.appendChild(ca);
     }
     if (o.how === "level") {
@@ -1347,7 +1584,7 @@ function obtainedBlock(s, D) {
       var t = D.traits[String(o.trait)];
       li.appendChild(el("span", null, " - from trait "));
       var ta = el("a", null, t ? t.name : "#" + o.trait);
-      ta.href = "#/trait/" + o.trait;
+      ta.href = urlFor("trait/" + o.trait);
       li.appendChild(ta);
       var bits = [];
       if (o.rank) bits.push("at rank " + o.rank);
@@ -1373,6 +1610,50 @@ function branchName(key, name) {
   return parts[parts.length - 1];
 }
 
+/* Every cell carries its position in the tree as "row_col", and the page was
+   throwing that away to print a flat list - the one thing a trait tree IS is a
+   shape. Laid out on a grid it reads the way it does in the client. A tree
+   whose cells are not row_col (the war-steed trees use their own scheme) falls
+   back to the list. */
+function traitGrid(cells, D) {
+  var placed = cells.filter(function (c) { return /^\d+_\d+$/.test(c.cell || ""); });
+  if (placed.length !== cells.length || !placed.length) {
+    var ul = el("ul", "links");
+    cells.forEach(function (cell) {
+      ul.appendChild(traitLink(D.traits[String(cell.trait)], "cell " + cell.cell));
+    });
+    return ul;
+  }
+  var cols = 0;
+  placed.forEach(function (c) {
+    cols = Math.max(cols, parseInt(c.cell.split("_")[1], 10));
+  });
+  var grid = el("div", "ttree");
+  grid.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0, 1fr))";
+  placed.forEach(function (cell) {
+    var t = D.traits[String(cell.trait)];
+    var pos = cell.cell.split("_");
+    var a = el("a", "tcell");
+    a.style.gridRow = pos[0];
+    a.style.gridColumn = pos[1];
+    a.href = urlFor("trait/" + (t ? t.id : cell.trait));
+    var img = el("img");
+    img.src = iconUrl(t ? t.icon : 0);
+    img.alt = "";
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    a.appendChild(img);
+    a.appendChild(el("span", "tn", t ? t.name : "#" + cell.trait));
+    var grants = (t && t.skills) ? t.skills.length : 0;
+    if (grants) {
+      a.appendChild(el("span", "tg",
+        grants + " skill" + (grants === 1 ? "" : "s")));
+    }
+    a.title = (t ? t.name : "") + " - row " + pos[0] + ", column " + pos[1];
+    grid.appendChild(a);
+  });
+  return grid;
+}
+
 function cellSort(a, b) {
   function n(c) {
     var m = /^(\d+)_(\d+)$/.exec(c || "");
@@ -1396,7 +1677,7 @@ function showLandingClasses() {
 
 function classCard(c) {
   var a = el("a", "classcard");
-  a.href = "#/class/" + c.id;
+  a.href = urlFor("class/" + c.id);
   var img = el("img");
   img.src = iconUrl(c.icon);
   img.alt = "";
@@ -1486,7 +1767,7 @@ function renderClass(c, D) {
           im.onerror = function () { this.style.visibility = "hidden"; };
           td1.appendChild(im);
           var a = el("a", null, meta ? meta.n : "#" + e.id);
-          a.href = "#/skill/" + e.id;
+          a.href = urlFor("skill/" + e.id);
           td1.appendChild(a);
           var td2;
           if (creep) {
@@ -1523,14 +1804,7 @@ function renderClass(c, D) {
         d.appendChild(richText(br.desc));
         hh.appendChild(d);
       }
-      var ul = el("ul", "links");
-      cells.forEach(function (cell) {
-        var t = D.traits[String(cell.trait)];
-        var grants = (t && t.skills) ? t.skills.length : 0;
-        ul.appendChild(traitLink(t, "cell " + cell.cell +
-          (grants ? "  grants " + grants + " skill" + (grants === 1 ? "" : "s") : "")));
-      });
-      hh.appendChild(ul);
+      hh.appendChild(traitGrid(cells, D));
 
       // a line you cannot specialize in awards no set bonuses, whatever
       // specialization progression the data leaves pointing at it
@@ -1604,13 +1878,13 @@ function renderClass(c, D) {
       im.onerror = function () { this.style.visibility = "hidden"; };
       td0.appendChild(im);
       var a = el("a", null, meta ? meta.n : "#" + g.skill);
-      a.href = "#/skill/" + g.skill;
+      a.href = urlFor("skill/" + g.skill);
       td0.appendChild(a);
       if (g.rank) td0.appendChild(el("span", "via", "at rank " + g.rank));
       tr.appendChild(td0);
       var td1 = el("td");
       var ta = el("a", null, g.trait.name);
-      ta.href = "#/trait/" + g.trait.id;
+      ta.href = urlFor("trait/" + g.trait.id);
       td1.appendChild(ta);
       tr.appendChild(td1);
       tr.appendChild(el("td", "muted", g.where));
@@ -1718,7 +1992,7 @@ function renderTrait(t, D, MS, progs) {
       im.onerror = function () { this.style.visibility = "hidden"; };
       li.appendChild(im);
       var a = el("a", null, pair[0].name);
-      a.href = "#/class/" + pair[0].id;
+      a.href = urlFor("class/" + pair[0].id);
       li.appendChild(a);
       li.appendChild(el("span", "via", pair[1]));
       ul.appendChild(li);
@@ -1736,11 +2010,16 @@ function renderTrait(t, D, MS, progs) {
 function linkRun(items, limit, notListed) {
   var frag = document.createDocumentFragment();
   var hidden = [];
-  items.forEach(function (make, i) {
-    var sep = i ? document.createTextNode(", ") : null;
+  // Count what is actually emitted, not what was offered: a maker returns null
+  // when its target is missing from the dataset, and keying the separator and
+  // the limit off the offered index put a leading ", " on such a list and let
+  // a skipped item consume a visible slot.
+  var shown = 0;
+  items.forEach(function (make) {
     var node = make();
     if (!node) return;
-    if (i < limit) {
+    var sep = shown ? document.createTextNode(", ") : null;
+    if (shown < limit) {
       if (sep) frag.appendChild(sep);
       frag.appendChild(node);
     } else {
@@ -1751,25 +2030,24 @@ function linkRun(items, limit, notListed) {
       hidden.push(span);
       frag.appendChild(span);
     }
+    shown++;
   });
   var extra = hidden.length;
-  if (extra || notListed) {
+  if (extra) {
     var more = el("a", "more");
     more.href = "#";
-    more.textContent = extra ? "  +" + extra + " more" : "";
-    if (extra) {
-      more.onclick = function (ev) {
-        ev.preventDefault();
-        var open = hidden.length && hidden[0].hidden;
-        hidden.forEach(function (h) { h.hidden = !open; });
-        more.textContent = open ? "  show fewer" : "  +" + extra + " more";
-        return false;
-      };
-      frag.appendChild(more);
-    }
-    if (notListed) {
-      frag.appendChild(el("span", "via", "  (" + notListed + " not listed)"));
-    }
+    more.textContent = "  +" + extra + " more";
+    more.onclick = function (ev) {
+      ev.preventDefault();
+      var open = hidden[0].hidden;
+      hidden.forEach(function (h) { h.hidden = !open; });
+      more.textContent = open ? "  show fewer" : "  +" + extra + " more";
+      return false;
+    };
+    frag.appendChild(more);
+  }
+  if (notListed) {
+    frag.appendChild(el("span", "via", "  (" + notListed + " not listed)"));
   }
   return frag;
 }
@@ -1810,7 +2088,7 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
       var t = D.traits[String(id)];
       if (!t) return null;
       var a = el("a", null, t.name);
-      a.href = "#/trait/" + id;
+      a.href = urlFor("trait/" + id);
       return a;
     });
   });
@@ -1820,7 +2098,7 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
       var essence = meta && meta.t === "z";
       var a = el("a", essence ? "ess" : "trc",
                  (meta ? meta.n : "#" + id) + (essence ? " (essence)" : " (tracery)"));
-      a.href = "#/" + (essence ? "essence" : "tracery") + "/" + id;
+      a.href = urlFor("" + (essence ? "essence" : "tracery") + "/" + id);
       return a;
     });
   });
@@ -1828,7 +2106,7 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
     makers.push(function () {
       var meta = nameOf(id);
       var a = el("a", "eff", meta ? meta.n : "#" + id);
-      a.href = "#/effect/" + id;
+      a.href = urlFor("effect/" + id);
       return a;
     });
   });
@@ -1836,7 +2114,7 @@ function sourceFragment(prop, MS, D, limit, only, noGear) {
     makers.push(function () {
       var st = SETS && SETS[String(id)];
       var a = el("a", "set", (st ? st.name : "#" + id) + " (set)");
-      a.href = "#/set/" + id;
+      a.href = urlFor("set/" + id);
       return a;
     });
   });
@@ -1874,7 +2152,12 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
     var tr = el("tr");
 
     var td0 = el("td");
-    td0.appendChild(el("code", "pn", st.stat));
+    // the tooltip above prints "Incoming Healing"; this table printed only
+    // Combat_IncomingHealing_Modifier_Current, which is the same thing said
+    // in a language nobody speaks
+    var pmeta = PROPS && PROPS[st.stat];
+    if (pmeta && pmeta.n) td0.appendChild(el("div", "plabel", pmeta.n));
+    td0.appendChild(propCode(st.stat));
     if (st.description) {
       var dd = el("div", "muted");
       dd.appendChild(richText(st.description));
@@ -1885,7 +2168,7 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
       st.modifiedBy.forEach(function (prop) {
         var line = el("div", "muted");
         line.appendChild(document.createTextNode("scaled by "));
-        line.appendChild(el("code", "pn", prop));
+        line.appendChild(propCode(prop));
         line.appendChild(document.createTextNode(" from "));
         line.appendChild(sourceFragment(prop, MS, D, 4));
         td0.appendChild(line);
@@ -1943,7 +2226,10 @@ function readersCell(prop, MS, D, only) {
     if (!reachable(u[0], only)) return;
     (byField[u[1]] = byField[u[1]] || []).push(u[0]);
   });
-  Object.keys(byField).sort().forEach(function (field) {
+  // the capped-away count belongs to the property, so it is stated after the
+  // last field rather than repeated under every one
+  var fields = Object.keys(byField).sort();
+  fields.forEach(function (field, fi) {
     any = true;
     var ids = byField[field];
     var line = el("div");
@@ -1953,10 +2239,10 @@ function readersCell(prop, MS, D, only) {
       return function () {
         var meta = nameOf(id);
         var a = el("a", null, meta ? meta.n : "#" + id);
-        a.href = "#/skill/" + id;
+        a.href = urlFor("skill/" + id);
         return a;
       };
-    }), SHOW, src.skillsMore || 0));
+    }), SHOW, fi === fields.length - 1 ? (src.skillsMore || 0) : 0));
     td.appendChild(line);
   });
 
@@ -1973,7 +2259,7 @@ function readersCell(prop, MS, D, only) {
       return function () {
         var meta = nameOf(r[0]);
         var a = el("a", spec[1] === "effect" ? "eff" : null, meta ? meta.n : "#" + r[0]);
-        a.href = "#/" + spec[1] + "/" + r[0];
+        a.href = urlFor("" + spec[1] + "/" + r[0]);
         a.title = "scales its " + r[1];
         return a;
       };
@@ -2005,7 +2291,7 @@ function effectRunCell(ids) {
     return function () {
       var meta = nameOf(eid);
       var a = el("a", "eff", meta ? meta.n : "#" + eid);
-      a.href = "#/effect/" + eid;
+      a.href = urlFor("effect/" + eid);
       a.title = "effect " + eid;
       return a;
     };
@@ -2043,7 +2329,7 @@ function chanceBlock(s, D, MS) {
     var tr = el("tr");
     var td0 = el("td");
     var a = el("a", "eff", e.name);
-    a.href = "#/effect/" + e.id;
+    a.href = urlFor("effect/" + e.id);
     td0.appendChild(a);
     if (e.duration) td0.appendChild(el("span", "via", secs(e.duration)));
     tr.appendChild(td0);
@@ -2089,7 +2375,7 @@ function conditionalBlock(s, D) {
       td2.appendChild(linkRun(traits.map(function (id) {
         return function () {
           var a = el("a", null, D.traits[String(id)].name);
-          a.href = "#/trait/" + id;
+          a.href = urlFor("trait/" + id);
           return a;
         };
       }), 3, 0));
@@ -2097,12 +2383,12 @@ function conditionalBlock(s, D) {
       // no trait applies it: an item set or something else we cannot name
       var meta = nameOf(r.from);
       var a = el("a", "eff", meta ? meta.n : r.prop);
-      a.href = "#/effect/" + r.from;
+      a.href = urlFor("effect/" + r.from);
       td2.appendChild(el("span", "muted", "something grants "));
       td2.appendChild(a);
     }
     var pn = el("div");
-    pn.appendChild(el("code", "pn", r.prop));
+    pn.appendChild(propCode(r.prop));
     td2.appendChild(pn);
     if (r.description) {
       var d = el("div", "muted");
@@ -2127,7 +2413,7 @@ function procBlock(s, D) {
     tr.appendChild(effectRunCell(r.effects));
     var td1 = el("td", "muted", (r.procOn || []).join(", ") || "any hit");
     td1.appendChild(el("div", null, ""));
-    td1.lastChild.appendChild(el("code", "pn", r.prop));
+    td1.lastChild.appendChild(propCode(r.prop));
     tr.appendChild(td1);
     var td2 = el("td");
     td2.appendChild(linkRun((r.traits || []).map(function (id) {
@@ -2135,7 +2421,7 @@ function procBlock(s, D) {
         var tt = D.traits[String(id)];
         if (!tt) return null;
         var a = el("a", null, tt.name);
-        a.href = "#/trait/" + id;
+        a.href = urlFor("trait/" + id);
         return a;
       };
     }), 3, 0));
@@ -2419,7 +2705,7 @@ function vitalLine(e, v, value, vps, variance, tail) {
 function chanceSource(e) {
   if (!e.probabilityFrom) return null;
   var box = el("span");
-  box.appendChild(el("code", "pn", e.probabilityFrom));
+  box.appendChild(propCode(e.probabilityFrom));
   var vals = e.probabilityValues || [];
   if (vals.length) {
     var pct = vals.map(function (v) {
@@ -2464,7 +2750,7 @@ function effectBlocks(s, level) {
     if (e.probability === 0) return;
     var blk = el("div", "tipeff");
     var head = el("a", "tipeffname", e.name);
-    head.href = "#/effect/" + e.id;
+    head.href = urlFor("effect/" + e.id);
     blk.appendChild(head);
     if (e.applied || e.descOverride) {
       var d = el("div", "tipeffdesc");
@@ -2483,6 +2769,15 @@ function effectBlocks(s, level) {
     }
     if (blk.children.length > 1) out.push(blk);
   });
+  // the panel quotes at most six, the way the client's box is bounded - but
+  // saying so beats letting the rest disappear without a word
+  if (refs.length > 6) {
+    var rest = el("div", "tipeff");
+    rest.appendChild(el("div", "tipeffdesc", "and " + (refs.length - 6) +
+      " more effect" + (refs.length - 6 === 1 ? "" : "s") +
+      " - listed in full below"));
+    out.push(rest);
+  }
   return out;
 }
 
@@ -2498,8 +2793,10 @@ function statAmount(st, meta, signed) {
   var n, suffix = "";
   if (st.op === "Multiply") {
     if (pct) { n = (v - 1) * 100; suffix = "%"; }
-    // a plain multiplier is not an amount to sign - the game writes "x0.9"
-    else { return "x" + fmt(v, 3).replace(/\.?0+$/, ""); }
+    // a plain multiplier is not an amount to sign - the game writes "x0.9".
+    // fmt already trims trailing zeros; stripping them a second time here made
+    // /\.?0+$/ eat the zero off a whole number, so x10 rendered as "x1".
+    else { return "x" + fmt(v, 3); }
   } else if (pct) {
     n = v * 100; suffix = "%";
   } else {
@@ -2568,41 +2865,6 @@ function multiLine(cls, str) {
   return host.childNodes.length ? host : null;
 }
 
-/* The effect lines a tooltip carries: what it puts on the target, and what it
-   puts on you. Conditional ones are left out - the panel is what the client
-   would draw for an untraited character. */
-function effectLines(s) {
-  var out = [];
-  var onTarget = [];
-  (s.attacks || []).forEach(function (a) {
-    (a.targetEffects || []).forEach(function (e) { onTarget.push(e); });
-  });
-  if (onTarget.length) out.push({ label: "Applies", refs: onTarget });
-  if (s.userEffects && s.userEffects.length) {
-    out.push({ label: "On you", refs: s.userEffects });
-  }
-  if (s.toggleEffects && s.toggleEffects.length) {
-    out.push({ label: "While active", refs: s.toggleEffects });
-  }
-  return out;
-}
-
-function effectRef(refs) {
-  var span = el("span", "tv");
-  span.appendChild(linkRun(refs.slice(0, 6).map(function (e) {
-    return function () {
-      var meta = nameOf(e.id);
-      var a = el("a", "eff", meta ? meta.n : "#" + e.id);
-      a.href = "#/effect/" + e.id;
-      if (e.duration !== undefined) {
-        a.title = fmt(e.duration) + "s";
-      }
-      return a;
-    };
-  }), 3, 0));
-  return span;
-}
-
 /* Damage is the one line that cannot be resolved here: the client multiplies
    the skill's coefficients by the character's weapon and mastery. Those two
    are written as W and A and explained below the panel. */
@@ -2616,8 +2878,20 @@ function damageExpr(a, progs, level) {
   if (mod !== 1) expr = fmt(mod) + " x (" + expr + ")";
   var cap = a.damageMax !== undefined ? a.damageMax
           : (a.damageMaxProgression ? progAt(progs, a.damageMaxProgression, level) : null);
+  // W and A are the two numbers this data cannot know. Once the reader has
+  // supplied them once, in the sidebar, the expression is just arithmetic.
+  var W = parseFloat(PREFS.wdps), A = parseFloat(PREFS.dmgAdd);
+  var resolved = null;
+  if (!isNaN(W) || !isNaN(A)) {
+    resolved = ((a.implementContribution || 0) * (isNaN(W) ? 0 : W) +
+                (a.damageContribution || 0) * (isNaN(A) ? 0 : A)) * mod;
+    if (cap && resolved > cap) resolved = cap;
+  }
   var span = el("span", "tv");
   span.appendChild(el("code", "dmg", expr));
+  if (resolved !== null) {
+    span.appendChild(el("span", "resolved", "  =  " + num(resolved)));
+  }
   var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
            : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
   var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
@@ -2681,7 +2955,7 @@ function modsBlock(s, D, MS) {
         }
         tr.appendChild(td0);
         var td1 = el("td");
-        td1.appendChild(el("code", "pn", prop));
+        td1.appendChild(propCode(prop));
         tr.appendChild(td1);
         tr.appendChild(cells[i]);
         t.appendChild(tr);
@@ -2689,13 +2963,24 @@ function modsBlock(s, D, MS) {
     });
 
     wrap.textContent = "";
-    wrap.appendChild(t);
-    var note = el("div", "muted");
-    note.style.cssText = "font-size:11.5px;margin-top:8px";
-    note.appendChild(document.createTextNode(
-      "A value listed here is not always active - it applies only while "
-      + "something grants the property beside it."));
-    wrap.appendChild(note);
+    // the class filter can drop every group, which used to leave the header
+    // row standing over nothing
+    var anyRows = t.rows.length > 1;
+    if (anyRows) {
+      wrap.appendChild(t);
+      var note = el("div", "muted");
+      note.style.cssText = "font-size:11.5px;margin-top:8px";
+      note.appendChild(document.createTextNode(
+        "A value listed here is not always active - it applies only while "
+        + "something grants the property beside it."));
+      wrap.appendChild(note);
+    } else {
+      var none = el("div", "muted");
+      none.style.cssText = "font-size:12px";
+      none.textContent = "Nothing here is granted by anything this class can "
+        + "reach.";
+      wrap.appendChild(none);
+    }
 
     if (owners.length) {
       var foot = el("div", "muted");
@@ -2774,7 +3059,7 @@ function renderTracery(t, D, MS, progs) {
     var td1 = el("td");
     (r.stats || []).forEach(function (st) {
       var line = el("div");
-      line.appendChild(el("code", "pn", st.stat));
+      line.appendChild(propCode(st.stat));
       if (st.value !== undefined) {
         line.appendChild(el("span", null, "  " + (st.op === "Add" ? "+" : "") + fmt(st.value, 4)));
       } else if (st.progression) {
@@ -2810,8 +3095,10 @@ function renderTracery(t, D, MS, progs) {
       if (!seenStat[st.stat]) { seenStat[st.stat] = 1; allStats.push(st); }
     });
   });
+  // progressions are loaded for this route and were being thrown away here,
+  // so "scales with item level" never drew the curve it was describing
   section(host, "What those properties affect",
-          grantsBlock(allStats, MS, null, "Item level", D, freepClasses(D)));
+          grantsBlock(allStats, MS, progs, "Item level", D, freepClasses(D)));
 
   if (cls) {
     var ul = el("ul", "links");
@@ -2822,7 +3109,7 @@ function renderTracery(t, D, MS, progs) {
     ci.onerror = function () { this.style.visibility = "hidden"; };
     li.appendChild(ci);
     var a = el("a", null, cls.name);
-    a.href = "#/class/" + cls.id;
+    a.href = urlFor("class/" + cls.id);
     li.appendChild(a);
     ul.appendChild(li);
     section(host, "Usable by", ul);
@@ -2875,7 +3162,7 @@ function renderSet(st, D, MS, progs) {
       var said = statLine(x, "item level");
       if (said) { said.className = "setstat"; td1.appendChild(said); }
       var line = el("div", said ? "muted small" : null);
-      line.appendChild(el("code", "pn", x.stat));
+      line.appendChild(propCode(x.stat));
       if (!said) {
         if (x.value !== undefined) {
           line.appendChild(el("span", null, "  " + (x.op === "Add" && x.value > 0 ? "+" : "") +
@@ -2904,7 +3191,7 @@ function renderSet(st, D, MS, progs) {
     });
   });
   section(host, "What those properties affect",
-          grantsBlock(allStats, MS, null, "Item level", D, freepClasses(D)));
+          grantsBlock(allStats, MS, progs, "Item level", D, freepClasses(D)));
 
   // items are not in the index, so the pieces are listed by id
   if ((st.members || []).length) {
@@ -2917,23 +3204,272 @@ function renderSet(st, D, MS, progs) {
   return host;
 }
 
+/* ---------------- your character ---------------- */
+
+/* Level, class and the two weapon numbers, remembered between visits. Every
+   page already had its own level box; setting the same number over and over
+   was the single most repetitive thing about using the site. Stored per
+   browser, never sent anywhere. */
+var PREFS = (function () {
+  try { return JSON.parse(localStorage.getItem("lotrodb.prefs")) || {}; }
+  catch (e) { return {}; }
+})();
+
+function savePrefs() {
+  // a private window, or storage switched off, must not break the page
+  try { localStorage.setItem("lotrodb.prefs", JSON.stringify(PREFS)); }
+  catch (e) { /* nothing to do - the settings just do not persist */ }
+}
+
+/* The level a page should open at: the reader's own, when they have said. */
+function preferredLevel(fallback) {
+  var v = parseInt(PREFS.level, 10);
+  if (!isNaN(v) && v > 0) return Math.min(v, LEVEL_CAP);
+  return fallback;
+}
+
+/* Positively known to belong to this class. Unlike reachable(), an unplaced
+   source does NOT pass: "show me Champion things" means the ones we can say
+   are the Champion's, not everything we cannot rule out. */
+function belongsTo(id, cls) {
+  var own = SRC_CLASS && SRC_CLASS[String(id)];
+  return !!own && own.indexOf(cls) !== -1;
+}
+
+function buildPrefsUI() {
+  var host = document.getElementById("prefs");
+  if (!host) return;
+  host.textContent = "";
+
+  var lvl = el("label", "pf");
+  lvl.appendChild(el("span", null, "Level"));
+  var li = el("input");
+  li.type = "number";
+  li.min = "1";
+  li.max = String(LEVEL_CAP);
+  li.placeholder = String(LEVEL_CAP);
+  li.value = PREFS.level || "";
+  li.oninput = function () {
+    var v = parseInt(li.value, 10);
+    PREFS.level = (!isNaN(v) && v > 0) ? Math.min(v, LEVEL_CAP) : null;
+    savePrefs();
+    route();
+  };
+  lvl.appendChild(li);
+  host.appendChild(lvl);
+
+  var cw = el("label", "pf");
+  cw.appendChild(el("span", null, "Class"));
+  var cs = el("select");
+  cs.appendChild(new Option("Any", ""));
+  cw.appendChild(cs);
+  host.appendChild(cw);
+
+  // the class list and the attribution index are only needed once somebody
+  // actually opens this, so neither is on the critical path to first paint
+  Promise.all([classData(), sourceClasses()]).then(function (r) {
+    SRC_CLASS = r[1] || {};
+    // a class restored from a previous visit could not be applied until now
+    if (PREFS.cls) runSearch();
+    classGroups(r[0]).forEach(function (g) {
+      g[1].forEach(function (c) {
+        var o = new Option(c.name, String(c.id));
+        if (String(PREFS.cls) === String(c.id)) o.selected = true;
+        cs.appendChild(o);
+      });
+    });
+    cs.onchange = function () {
+      PREFS.cls = cs.value ? parseInt(cs.value, 10) : null;
+      savePrefs();
+      runSearch();
+      route();
+    };
+  });
+
+  var gear = el("details", "pfgear");
+  gear.appendChild(el("summary", null, "Weapon numbers"));
+  var note = el("div", "muted pfnote");
+  note.textContent = "A skill's damage is its own coefficients times two "
+    + "numbers off your character. Put them in and the damage line resolves "
+    + "to real numbers instead of W and A.";
+  gear.appendChild(note);
+  [["wdps", "W - weapon contribution"], ["dmgAdd", "A - damage from mastery"]]
+    .forEach(function (pair) {
+      var w = el("label", "pf");
+      w.appendChild(el("span", null, pair[1]));
+      var i = el("input");
+      i.type = "number";
+      i.min = "0";
+      i.step = "any";
+      i.value = PREFS[pair[0]] || "";
+      i.oninput = function () {
+        var v = parseFloat(i.value);
+        PREFS[pair[0]] = isNaN(v) ? null : v;
+        savePrefs();
+        route();
+      };
+      w.appendChild(i);
+      gear.appendChild(w);
+    });
+  host.appendChild(gear);
+}
+
+/* ---------------- property pages ---------------- */
+
+/* modSources.json already indexed all 3,194 properties in every direction -
+   what grants each one and what reads it - but the only way in was sideways
+   from a skill that happened to mention it. This is that index, addressable. */
+function renderProperty(prop, MS, D) {
+  var meta = PROPS && PROPS[prop];
+  var host = el("div");
+
+  var head = el("div", "head");
+  var h = el("div");
+  h.appendChild(el("h2", null, (meta && meta.n) ? meta.n : spaceWords(prop)));
+  h.appendChild(el("div", "id", prop));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  var tags = el("div", "tags");
+  tags.appendChild(el("span", "tag kind", "Property"));
+  if (meta && meta.c) tags.appendChild(el("span", "tag", titleCase(meta.c)));
+  if (meta && meta.p) tags.appendChild(el("span", "tag", "Written as a percentage"));
+  if (!meta) tags.appendChild(el("span", "tag", "No client label"));
+  host.appendChild(tags);
+
+  var src = (MS && MS[prop]) || null;
+  if (!src) {
+    host.appendChild(el("p", "muted",
+      "Nothing in this dataset grants or reads this property."));
+    return host;
+  }
+
+  var nSrc = (src.traits || []).length + (src.effects || []).length +
+             (src.traceries || []).length + (src.sets || []).length;
+  var nRead = (src.skills || []).length + (src.readEffects || []).length +
+              (src.readTraits || []).length;
+  section(host, "At a glance", statRow([
+    ["Sources", nSrc + ((src.traitsMore || src.effectsMore ||
+      src.traceriesMore || src.setsMore) ? "+" : "")],
+    ["Read by", nRead + ((src.skillsMore || src.readEffectsMore ||
+      src.readTraitsMore) ? "+" : "")]
+  ]));
+
+  var granted = el("div", "proprun");
+  granted.appendChild(sourceFragment(prop, MS, D, 40));
+  section(host, "Granted by", granted);
+
+  // readersCell builds a table cell; the same content reads fine on its own
+  var readers = el("div", "proprun");
+  var td = readersCell(prop, MS, D, null);
+  while (td.firstChild) readers.appendChild(td.firstChild);
+  section(host, "What it scales", readers);
+  return host;
+}
+
+/* ---------------- what changed ---------------- */
+
+/* The extractor snapshots every record's name and a hash of its contents on
+   each rebuild, and diffs against the one the previous rebuild left. Nowhere
+   else says what a LOTRO patch actually did to the numbers. */
+function renderChanges(ch) {
+  var host = el("div");
+  var head = el("div", "head");
+  var h = el("div");
+  h.appendChild(el("h2", null, "What changed"));
+  h.appendChild(el("div", "id", "since the previous rebuild"));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  if (!ch || !ch.baseline) {
+    host.appendChild(el("p", "desc",
+      "This build is the baseline. Rebuild after the next LOTRO patch and "
+      + "everything that was added, removed, renamed or retuned will be "
+      + "listed here."));
+    return host;
+  }
+  var c = ch.counts || {};
+  section(host, "At a glance", statRow([
+    ["Added", c.added], ["Removed", c.removed],
+    ["Renamed", c.renamed], ["Retuned", c.changed]
+  ]));
+
+  function rowsList(rows, kind) {
+    if (!rows || !rows.length) return null;
+    var ul = el("ul", "links");
+    rows.forEach(function (row) {
+      var id = parseInt(row[0], 10);
+      var meta = nameOf(id);
+      var li = el("li");
+      var img = el("img");
+      img.src = iconUrl(meta ? meta.k : 0);
+      img.alt = "";
+      img.onerror = function () { this.style.visibility = "hidden"; };
+      li.appendChild(img);
+      var body = el("div");
+      var t = row[2] || (meta && meta.t);
+      if (t && meta) {
+        var a = el("a", null, row[1] || meta.n);
+        a.href = urlFor(routeFor(t) + "/" + id);
+        body.appendChild(a);
+      } else {
+        // a removed record has no page left to link to
+        body.appendChild(el("span", null, row[1] || ("#" + id)));
+      }
+      if (kind === "renamed") {
+        body.appendChild(el("span", "via", "was " + row[1]));
+        body.textContent = "";
+        var a2 = el("a", null, row[2]);
+        a2.href = urlFor("skill/" + id);
+        var meta2 = nameOf(id);
+        if (meta2) a2.href = urlFor(routeFor(meta2.t) + "/" + id);
+        body.appendChild(a2);
+        body.appendChild(el("span", "via", "was “" + row[1] + "”"));
+      }
+      li.appendChild(body);
+      ul.appendChild(li);
+    });
+    return ul;
+  }
+
+  section(host, "Added", rowsList(ch.added));
+  section(host, "Renamed", rowsList(ch.renamed, "renamed"));
+  section(host, "Values retuned", rowsList(ch.changed));
+  section(host, "Removed", rowsList(ch.removed));
+
+  var capped = ["added", "removed", "renamed", "changed"].some(function (k) {
+    return (c[k] || 0) > ((ch[k] || []).length);
+  });
+  if (capped) {
+    host.appendChild(el("p", "muted",
+      "Long lists are cut at 400; the counts above are the real totals."));
+  }
+  return host;
+}
+
 /* ---------------- routing ---------------- */
 
 function route() {
   var detail = document.getElementById("detail");
+  var path = routePath();
+  // on a phone the list and the page cannot both have the screen; once
+  // something is open, the list shrinks to a strip
+  var shell = document.querySelector(".app");
+  if (shell) shell.classList.toggle("reading", !!path);
 
-  if (!location.hash || location.hash === "#" || location.hash === "#/") {
+  if (!path) {
     selected = null;
-    if (!document.getElementById("landing")) {
-      location.reload();
-      return;
+    if (!document.getElementById("landing") && LANDING) {
+      detail.textContent = "";
+      detail.appendChild(LANDING);
     }
     showLandingClasses();
     runSearch();
+    document.title = "LOTRO Skills and Effects";
     return;
   }
 
-  if (/^#\/classes\/?$/.test(location.hash)) {
+  if (path === "classes") {
     selected = null;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
@@ -2946,17 +3482,57 @@ function route() {
     return;
   }
 
-  var ym = /^#\/(?:tracery|essence)\/(\d+)$/.exec(location.hash);
+  if (path === "changes") {
+    selected = null;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    sideFile("changes").then(function (ch) {
+      detail.textContent = "";
+      detail.appendChild(renderChanges(ch));
+      document.title = "What changed - LOTRO Skills and Effects";
+    });
+    runSearch();
+    return;
+  }
+
+  var pm = /^property\/(.+)$/.exec(path);
+  if (pm) {
+    var prop = pm[1];
+    selected = null;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    Promise.all([modSources(), classData(), propertyData(), sourceClasses(),
+                 itemSetData()])
+      .then(function (res) {
+        PROPS = res[2] || {};
+        SRC_CLASS = res[3] || {};
+        SETS = res[4] || {};
+        detail.textContent = "";
+        detail.appendChild(renderProperty(prop, res[0], res[1]));
+        document.title = prop + " - LOTRO Skills and Effects";
+      });
+    runSearch();
+    return;
+  }
+
+  var ym = /^(?:tracery|essence)\/(\d+)$/.exec(path);
   if (ym) {
     var yid = parseInt(ym[1], 10);
-    selected = "y" + yid;
+    // the index types traceries "y" and essences "z"; hardcoding "y" meant an
+    // essence row never highlighted
+    var ymeta = nameOf(yid);
+    selected = (ymeta ? ymeta.t : "y") + yid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
     Promise.all([traceryData(), classData(), modSources(), progressions(),
-                 sourceClasses()])
+                 sourceClasses(), itemSetData(), propertyData()])
       .then(function (res) {
         var T = res[0];
+        PROPS = res[6] || {};
         SRC_CLASS = res[4] || {};
+        // a granting property can come from an item set; without this the set
+        // links on this page rendered as bare ids
+        SETS = res[5] || {};
         detail.textContent = "";
         // any member item id resolves to its family
         var rec = T[String(yid)] || T[String(TRACERY_OF[yid])];
@@ -2972,14 +3548,14 @@ function route() {
     return;
   }
 
-  var sm = /^#\/set\/(\d+)$/.exec(location.hash);
+  var sm = /^set\/(\d+)$/.exec(path);
   if (sm) {
     var sid = parseInt(sm[1], 10);
     selected = "g" + sid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
     Promise.all([itemSetData(), classData(), modSources(), sourceClasses(),
-                 propertyData()])
+                 propertyData(), progressions()])
       .then(function (res) {
         SETS = res[0] || {};
         SRC_CLASS = res[3] || {};
@@ -2990,7 +3566,7 @@ function route() {
           detail.appendChild(el("div", "empty", "No set with id " + sid + "."));
           return;
         }
-        detail.appendChild(renderSet(rec, res[1], res[2], null));
+        detail.appendChild(renderSet(rec, res[1], res[2], res[5]));
         detail.scrollTop = 0;
         document.title = rec.name + " - LOTRO Skills and Effects";
       });
@@ -2998,14 +3574,21 @@ function route() {
     return;
   }
 
-  var cm = /^#\/(class|trait)\/(\d+)$/.exec(location.hash);
+  var cm = /^(class|trait)\/(\d+)$/.exec(path);
   if (cm) {
     var what = cm[1], cid = parseInt(cm[2], 10);
-    selected = what === "class" ? "c" + cid : null;
+    // traits are in the index as "r"; leaving this null meant a trait row in
+    // the results list never highlighted
+    selected = (what === "class" ? "c" : "r") + cid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
-    Promise.all([classData(), modSources(), progressions()]).then(function (res) {
+    var ctJobs = [classData(), modSources(), progressions(), itemSetData(),
+                  propertyData()];
+    Promise.all(ctJobs).then(function (res) {
       var D = res[0], MS = res[1], progs = res[2];
+      // a trait modifier can be scaled by a property an item set grants
+      SETS = res[3] || {};
+      PROPS = res[4] || {};
       detail.textContent = "";
       var rec = what === "class" ? D.classes[String(cid)] : D.traits[String(cid)];
       if (!rec) {
@@ -3021,9 +3604,21 @@ function route() {
     return;
   }
 
-  var m = /^#\/(skill|effect)\/(\d+)$/.exec(location.hash);
+  var m = /^(skill|effect)\/(\d+)$/.exec(path);
   if (!m) {
+    // leaving the previous page up presented it as the answer to an address
+    // this site does not serve
     selected = null;
+    detail.textContent = "";
+    var nf = el("div", "empty");
+    nf.appendChild(el("h2", null, "Nothing at that address"));
+    nf.appendChild(el("p", null, "/" + path + " is not a page here."));
+    var back = el("a", null, "Back to the start");
+    back.href = urlFor("");
+    nf.appendChild(back);
+    detail.appendChild(nf);
+    document.title = "LOTRO Skills and Effects";
+    runSearch();
     return;
   }
   var kind = m[1], id = parseInt(m[2], 10);
@@ -3063,12 +3658,14 @@ function route() {
 
 /* ---------------- boot ---------------- */
 
-Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
+Promise.all([getJSON(dataUrl("data/meta.json")),
+             getJSON(dataUrl("data/index.json"))])
   .then(function (r) {
     META = r[0];
     INDEX = r[1];
     INDEX.forEach(function (e) { e.f = fold(e.n); e.q = squash(e.f); });
     BUCKETS = META.buckets || 128;
+    if (META.levelCap) LEVEL_CAP = META.levelCap;
     document.getElementById("meta").textContent =
       [META.skills.toLocaleString() + " skills",
        META.effects.toLocaleString() + " effects",
@@ -3086,6 +3683,8 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
       o.textContent = titleCase(c);
       sel.appendChild(o);
     });
+    buildPrefsUI();
+    migrateHash();
     runSearch();
     route();
   })
@@ -3098,9 +3697,30 @@ Promise.all([getJSON("data/meta.json"), getJSON("data/index.json")])
   });
 
 var timer;
-document.getElementById("q").addEventListener("input", function () {
+var qbox = document.getElementById("q");
+qbox.addEventListener("input", function () {
   clearTimeout(timer);
   timer = setTimeout(runSearch, 90);
+});
+qbox.addEventListener("keydown", function (ev) {
+  if (ev.key === "ArrowDown") { ev.preventDefault(); moveCursor(1); }
+  else if (ev.key === "ArrowUp") { ev.preventDefault(); moveCursor(-1); }
+  else if (ev.key === "Enter") { ev.preventDefault(); openCursor(); }
+  else if (ev.key === "Escape" && this.value) {
+    this.value = "";
+    runSearch();
+  }
+});
+/* "/" from anywhere puts the cursor in the search box, the way every search
+   -first site does. */
+document.addEventListener("keydown", function (ev) {
+  if (ev.key !== "/" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  var t = ev.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+            t.tagName === "SELECT" || t.isContentEditable)) return;
+  ev.preventDefault();
+  qbox.focus();
+  qbox.select();
 });
 ["fSkill", "fEffect", "fClass", "fTrait", "fTracery", "fEssence",
  "fSet"].forEach(function (id) {
@@ -3108,6 +3728,7 @@ document.getElementById("q").addEventListener("input", function () {
   b.onclick = function () {
     typeOn[b.dataset.t] = !typeOn[b.dataset.t];
     b.classList.toggle("on", typeOn[b.dataset.t]);
+    b.setAttribute("aria-pressed", typeOn[b.dataset.t] ? "true" : "false");
     runSearch();
   };
 });
@@ -3115,4 +3736,38 @@ document.getElementById("fCat").onchange = function () {
   catFilter = this.value;
   runSearch();
 };
-window.addEventListener("hashchange", route);
+/* One delegated handler turns every in-site link into a client-side
+   navigation, so nothing else has to know it is inside a single-page app.
+   Anything that is not a plain left click on a same-origin link under BASE is
+   left to the browser: modified clicks, new tabs, downloads and outbound links
+   all behave the way the reader expects them to. */
+document.addEventListener("click", function (ev) {
+  if (ev.defaultPrevented || ev.button !== 0) return;
+  if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+  var a = ev.target && ev.target.closest ? ev.target.closest("a") : null;
+  if (!a || a.target || a.hasAttribute("download")) return;
+  var href = a.getAttribute("href");
+  if (!href || href.charAt(0) === "#" || /^[a-z]+:/i.test(href)) return;
+  var u;
+  try { u = new URL(a.href); } catch (e) { return; }
+  if (u.origin !== location.origin || u.pathname.indexOf(BASE) !== 0) return;
+  ev.preventDefault();
+  navigate(u.pathname);
+});
+
+function navigate(path, replace) {
+  if (path !== location.pathname) {
+    history[replace ? "replaceState" : "pushState"]({}, "", path);
+  }
+  route();
+}
+
+window.addEventListener("popstate", route);
+
+/* Every link ever shared was "...#/skill/123". Rewrite one into the real path
+   in place, so an old bookmark still lands on the page it named. */
+function migrateHash() {
+  var m = /^#\/(.*)$/.exec(location.hash || "");
+  if (!m) return;
+  history.replaceState({}, "", urlFor(m[1]));
+}

@@ -5,18 +5,33 @@ directly out of the client `.dat` files. No scraping, no third-party dataset.
 
 ## Running it
 
-Browsers refuse `fetch()` from `file://`, so open it through a local server:
-
-    serve.bat
-
-or
-
-    python -m http.server 8000
+    serve.bat          (or: python serve.py)
 
 then go to <http://localhost:8000/>.
 
-To publish it, upload this whole folder to any static host (GitHub Pages,
-Netlify, Cloudflare Pages). There is no backend.
+Use `serve.py`, not `python -m http.server`. Pages have real addresses now
+(`/skill/1879049328`, not `#/skill/...`), and a plain static server has no file
+at that address, so every page but the front one would 404. `serve.py` falls
+back the same way the published site does, so what you preview is what ships.
+
+To publish it, upload this whole folder to any static host. There is no
+backend. On GitHub Pages, `404.html` is what makes a deep link work: the host
+serves it for an address it has no file for, and it hands the path back to
+`index.html`. If the site ever moves to the root of a domain, change
+`PATH_SEGMENTS_TO_KEEP` in `404.html` from 1 to 0.
+
+### Getting the pages indexed
+
+`sitemap.xml` and `robots.txt` are written on every rebuild. That is enough for
+a crawler to find the pages, but a static host still answers 404 for each one
+before the redirect runs, and crawlers believe the 404. To publish a real file
+per page instead:
+
+    refresh.bat --prerender
+
+That writes ~39,000 small HTML files (one per page, each with its own title and
+description, the app taking over from there). It is off by default because of
+what it does to the size of the repository.
 
 ## Where the data comes from
 
@@ -58,19 +73,26 @@ DID + `0x09000000`.
 
 ## Redeploying
 
-`index.html` loads `app.js?v=N` and `style.css?v=N`. Bump that `N` whenever
-either file changes, or returning visitors will keep running the copy their
-browser already cached.
+`index.html` loads `app.js?v=N` and `style.css?v=N`. The rebuild bumps that `N`
+itself, so returning visitors get the new files rather than their cache. If you
+edit `app.js` or `style.css` by hand without rebuilding, bump it by hand.
 
 ## Rebuilding after a LOTRO patch
 
-The extractor that produces `data/` and `icons/` is kept separately and is
-not part of this repository. Rebuilding is one command there; afterwards, bump
-the asset version as described above.
+The extractor that produces `data/` and `icons/` is kept separately and is not
+part of this repository. Rebuilding is one command there. It compares the new
+counts against the previous build and refuses to look happy if one of them has
+fallen - a DAT format change shows up as a count that collapses, not as an
+error - and it writes what changed since the last build into
+`data/changes.json`, which is the site's "What changed" page.
 
 ## Layout
 
     data/index.json        search index over every skill and effect
+    data/searchText.json   description text, fetched only when someone searches
+    data/properties.json   the client's own label for each game property
+    data/changes.json      what this build changed since the previous one
+    data/snapshot.json     the fingerprints the next build diffs against
     data/meta.json         counts
     data/progressions.json every level-scaling curve
     data/classes.json      the 12 classes, their trained skills and class traits
