@@ -268,6 +268,19 @@ var ACRONYMS = {
   PvP: 1, PvMP: 1, MP: 1, MC: 1, LI: 1, FM: 1, CC: 1
 };
 
+/* An internal enum name as words: "MeleeDPS" -> "Melee DPS". Runs of capitals
+   stay together, so DPS does not become D P S. */
+function spaceWords(word) {
+  word = String(word).replace(/_/g, " ");
+  var out = "";
+  for (var i = 0; i < word.length; i++) {
+    var ch = word[i];
+    if (i && /[A-Z]/.test(ch) && /[a-z0-9]/.test(word[i - 1])) out += " ";
+    out += ch;
+  }
+  return out.split(/\s+/).filter(Boolean).join(" ");
+}
+
 function titleCase(s) {
   if (Array.isArray(s)) return s.map(titleCase).join(", ");
   return String(s).split("_").map(function (part) {
@@ -280,7 +293,7 @@ function titleCase(s) {
 
 /* ---------------- search ---------------- */
 
-var typeOn = { s: true, e: true, c: true, y: true, z: true, g: true };
+var typeOn = { s: true, e: true, c: true, y: true, z: true, g: true, r: true };
 var catFilter = "";
 
 /* "Fleche" should find "Fleche" with the accent. Strip combining marks so the
@@ -364,10 +377,11 @@ function runSearch() {
     txt.appendChild(el("div", "nm", r.n));
     var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
                  : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence"
-                 : r.t === "g" ? "Set" : "Class";
-    txt.appendChild(el("div", "mt", kindWord +
-      (r.c && r.c !== "Class" ? " - " + titleCase(r.c) : "") +
-      (r.x ? " - internal" : "")));
+                 : r.t === "g" ? "Set" : r.t === "r" ? "Trait" : "Class";
+    // a category that just repeats the kind ("Set - Set") says nothing twice
+    var cat = r.c && r.c !== "Class" && titleCase(r.c) !== kindWord
+      ? " - " + titleCase(r.c) : "";
+    txt.appendChild(el("div", "mt", kindWord + cat + (r.x ? " - internal" : "")));
     row.appendChild(img);
     row.appendChild(txt);
     row.onclick = function () {
@@ -566,7 +580,7 @@ function chart(pts, label, xLabel) {
 function routeFor(t) {
   return t === "s" ? "skill" : t === "e" ? "effect"
        : t === "y" ? "tracery" : t === "z" ? "essence"
-       : t === "g" ? "set" : "class";
+       : t === "g" ? "set" : t === "r" ? "trait" : "class";
 }
 
 function nameOf(id) {
@@ -574,9 +588,8 @@ function nameOf(id) {
   return null;
 }
 
-/* Traits are not in the search index (there are 3,895 of them and they are not
-   what people search for), so they get their own list rather than linkList's
-   index lookup, which would render them as bare ids. */
+/* Traits have their own list rather than linkList's, because the class data
+   carries the rank and level a trait is earned at and the index does not. */
 function traitList(ids, D) {
   var ul = el("ul", "links");
   (ids || []).forEach(function (id) {
@@ -1257,9 +1270,9 @@ function refLink(id, kind, cls) {
 }
 
 function traitRef(id) {
-  // traits are not in the search index, so the name comes from the class data
   var t = CLASS_DATA && CLASS_DATA.traits && CLASS_DATA.traits[String(id)];
-  var a = el("a", null, t ? t.name : "#" + id);
+  var meta = t ? null : nameOf(id);
+  var a = el("a", null, t ? t.name : (meta ? meta.n : "#" + id));
   a.href = "#/trait/" + id;
   a.title = "trait " + id;
   return a;
@@ -1519,12 +1532,13 @@ function renderClass(c, D) {
       });
       hh.appendChild(ul);
 
-      // the client carries a copied set-bonus list for a few branches that have
-      // none in game; say so rather than leaving a silent gap
+      // a line you cannot specialize in awards no set bonuses, whatever
+      // specialization progression the data leaves pointing at it
       if (br.noSetBonuses) {
         var nb = el("div", "muted");
         nb.style.cssText = "font-size:11.5px;margin-top:6px";
-        nb.textContent = "This line has no set bonuses.";
+        nb.textContent = "This line cannot be specialized in, so it has no "
+          + "set bonuses.";
         hh.appendChild(nb);
       }
       // set bonuses: awarded for points spent in this branch, not placed in it
@@ -1661,16 +1675,38 @@ function renderTrait(t, D, MS, progs) {
       return { id: g.id, via: g.rank ? "at rank " + g.rank : "" };
     }), "effect"));
   }
-  // which classes reach this trait
+  // Which classes reach this trait, and by which of the four routes. The last
+  // two matter most: a specialization trait and a set-bonus trait sit in no
+  // tree cell and on no level table, so without them a trait page like The
+  // Deadly Storm names no class at all.
   var owners = [];
   Object.keys(D.classes).forEach(function (k) {
     var c = D.classes[k];
-    var viaTree = (c.trees || []).some(function (tid) {
+    var how = null;
+    (c.trees || []).forEach(function (tid) {
       var tree = D.trees[String(tid)];
-      return tree && tree.cells.some(function (cell) { return cell.trait === t.id; });
+      if (!tree) return;
+      (tree.cells || []).forEach(function (cell) {
+        if (cell.trait === t.id) {
+          how = how || (cell.branchName ? "trait tree - " + cell.branchName
+                                        : "trait tree");
+        }
+      });
+      (tree.branches || []).forEach(function (br) {
+        var where = br.name || br.key;
+        if (br.specTrait === t.id) {
+          how = "specialization for " + where;
+        }
+        (br.setBonuses || []).forEach(function (bonus) {
+          if (bonus.trait === t.id) {
+            how = how || (bonus.points + " points in " + where);
+          }
+        });
+      });
     });
     var viaLevel = (c.traits || []).filter(function (e) { return e.id === t.id; })[0];
-    if (viaTree || viaLevel) owners.push([c, viaLevel ? "level " + viaLevel.level : "trait tree"]);
+    if (viaLevel) how = "level " + viaLevel.level;
+    if (how) owners.push([c, how]);
   });
   if (owners.length) {
     var ul = el("ul", "links");
@@ -1862,6 +1898,10 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
     var td2 = el("td", "num");
     if (st.value !== undefined) {
       td2.textContent = fmt(st.value);
+    } else if (st.flags && st.flags.length) {
+      // an "Or" switches named flags on; the names are the whole modifier
+      td2.className = "";
+      td2.textContent = st.flags.map(spaceWords).join(", ");
     } else if (st.progression) {
       td2.textContent = "scales with " + (xLabel || "level").toLowerCase();
     } else {
@@ -2497,6 +2537,10 @@ function statLine(st, xLabel) {
   var said = statWording(st, meta);
   if (v === undefined || v === null || typeof v === "boolean") {
     if (said) return multiLine("tipstat", said);
+    if (st.flags && st.flags.length) {
+      return el("div", "tipstat",
+                name + ": " + st.flags.map(spaceWords).join(", "));
+    }
     if (v === undefined || v === null) {
       if (!st.progression) return null;
       return el("div", "tipstat",
@@ -3058,7 +3102,8 @@ document.getElementById("q").addEventListener("input", function () {
   clearTimeout(timer);
   timer = setTimeout(runSearch, 90);
 });
-["fSkill", "fEffect", "fClass", "fTracery", "fEssence", "fSet"].forEach(function (id) {
+["fSkill", "fEffect", "fClass", "fTrait", "fTracery", "fEssence",
+ "fSet"].forEach(function (id) {
   var b = document.getElementById(id);
   b.onclick = function () {
     typeOn[b.dataset.t] = !typeOn[b.dataset.t];
