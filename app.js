@@ -161,6 +161,48 @@ function preloadTipEffects(s) {
   }));
 }
 
+/* A trait's rank block quotes the effects it applies - "On every Swordplay
+   Critical Hit: / -1s Haversack Skills Cooldown" is A Watched Pot's whole
+   rank 1, and it lives on the effect, not on the trait's own modifiers. The
+   wording is often one level down (a proc carries the header, its nested
+   effect carries the line), so the chain is walked, not just the first hop. */
+/* Which nested links mean "and this is applied too". A tier-up ladder is a
+   sequence of alternatives, not a list of things that all happen, and flatten-
+   ing one into a rank block printed Furious Storms as +5/+10/+15/+20/+25% at
+   every rank at once. Countdown expiry, combos and on-removal are conditional
+   in the same way. Only the generator lists are unconditional. */
+var TRAIT_TIP_VIA = {
+  "EffectGenerator_SkillProc_UserEffectList": 1,
+  "EffectGenerator_SkillProc_TargetEffectList": 1,
+  "EffectGenerator_UserEffectList": 1,
+  "EffectGenerator_CasterEffectList": 1,
+  "EffectGenerator_DefenderEffectList": 1,
+  "EffectGenerator_AttackerEffectList": 1
+};
+function traitTipNested(e) {
+  return (e.nested || []).filter(function (n) { return TRAIT_TIP_VIA[n.via]; });
+}
+
+function preloadTraitEffects(t) {
+  var want = {};
+  function walk(id, depth) {
+    if (depth > 3 || want[id] === "done") return Promise.resolve();
+    if (EFFECT_CACHE[String(id)]) {
+      want[id] = "done";
+      return Promise.all(traitTipNested(EFFECT_CACHE[String(id)])
+        .map(function (n) { return walk(n.id, depth + 1); }));
+    }
+    want[id] = "done";
+    return loadRecord("effect", id).then(function (rec) {
+      if (!rec) return;
+      EFFECT_CACHE[String(rec.id)] = rec;
+      return Promise.all(traitTipNested(rec)
+        .map(function (n) { return walk(n.id, depth + 1); }));
+    });
+  }
+  return Promise.all((t.effects || []).map(function (g) { return walk(g.id, 0); }));
+}
+
 /* The Warden builds a gambit by pressing builders in order, and the tooltip
    shows the sequence as icons. The Burglar's Razor Wit line works the same way
    with its own four. GAMBITS maps the packed code to the builder it names. */
@@ -360,7 +402,29 @@ function num(n) {
   return typeof n === "number" ? Math.round(n).toLocaleString() : fmt(n);
 }
 
-function secs(n) { return n === undefined || n === null ? "-" : fmt(n) + "s"; }
+/* The client writes anything over a minute in minutes and seconds: 60s is
+   "1m", 120s is "2m", 81s is "1m 21s". Under a minute it stays in seconds.
+   The same step repeats upwards, because 216 cooldowns and durations run past
+   an hour and the Scribe Manuals sit at ten days - "14400m" is not a reading
+   of anything. Only the whole next unit down is shown, so nothing grows a
+   third term. */
+function secs(n) {
+  if (n === undefined || n === null) return "-";
+  if (typeof n !== "number" || !isFinite(n) || n < 60) return fmt(n) + "s";
+  var STEPS = [[86400, "d", 3600, "h"], [3600, "h", 60, "m"], [60, "m", 1, "s"]];
+  for (var i = 0; i < STEPS.length; i++) {
+    var big = STEPS[i][0];
+    if (n < big) continue;
+    var whole = Math.floor(n / big);
+    var rest = n - whole * big;
+    // Seconds keep their fraction ("2m 5.5s"); hours and days are read to a
+    // whole minute or hour, so nothing prints "1h 1.02m".
+    var sub = STEPS[i][2] === 1 ? fmt(rest) : Math.floor(rest / STEPS[i][2]);
+    if (!rest || !sub) return whole + STEPS[i][1];
+    return whole + STEPS[i][1] + " " + sub + STEPS[i][3];
+  }
+  return fmt(n) + "s";
+}
 
 /* The client writes internal names as Underscore_CamelCase with acronyms mixed
    in. Splitting on every lowercase-uppercase boundary turns "AoE" into "Ao E",
@@ -852,8 +916,26 @@ function traitList(ids, D) {
   return ul;
 }
 
+/* A nested reference carries the raw property key it was found under -
+   "Effect_ApplyOverTime_Applied_Effect_Array". The prefix and the Array/List
+   suffix are scaffolding; what is left is the route, and that is worth
+   reading. A merged reference carries several, comma separated. */
+function viaLabel(via) {
+  return String(via).split(", ").map(function (one) {
+    return spaceWords(one.replace(/^Effect(Generator)?_/, "")
+                         .replace(/_(Array|List)$/, ""))
+      .replace(/\bEffect List\b/, "effects")
+      .toLowerCase();
+  }).join(", ");
+}
+
 function linkList(refs, kindGuess, subLine) {
   var ul = el("ul", "links");
+  // Four distinct skills apply a Warden Morale-tap and they share two names
+  // between them; printed plain, the list reads as each one listed twice.
+  var dup = ambiguousNames(refs.map(function (r) {
+    return typeof r === "number" ? r : r.id;
+  }));
   refs.forEach(function (r) {
     var id = typeof r === "number" ? r : r.id;
     var meta = nameOf(id);
@@ -868,11 +950,12 @@ function linkList(refs, kindGuess, subLine) {
     var a = el("a", null, meta ? meta.n : "#" + id);
     var kind = meta ? routeFor(meta.t) : kindGuess;
     a.href = urlFor("" + kind + "/" + id);
+    if (meta && dup[meta.n]) a.appendChild(el("span", "idtag", "#" + id));
     body.appendChild(a);
     var bits = [];
     if (r && r.duration !== undefined) bits.push(fmt(r.duration) + "s");
     if (r && r.spellcraft !== undefined) bits.push("sc " + fmt(r.spellcraft));
-    if (r && r.via) bits.push(r.via);
+    if (r && r.via) bits.push(viaLabel(r.via));
     if (bits.length) body.appendChild(el("span", "via", bits.join("  ")));
 
     var extra = subLine ? subLine(id) : null;
@@ -1150,7 +1233,10 @@ function renderSkill(s, progs, D, MS, ET) {
       tags.appendChild(el("span", "tag", titleCase(k)));
     });
   }
-  ["immediate", "usableWhileMoving", "requiresFacing", "mustBeStealthed",
+  // "immediate" is not listed here any more - the panel below carries the
+  // speed line the way the client does, and printing it twice on one page
+  // read as two different facts.
+  ["usableWhileMoving", "requiresFacing", "mustBeStealthed",
    "breaksStealth", "ignoresResetTime"].forEach(function (f) {
     if (s[f]) tags.appendChild(el("span", "tag", titleCase(f)));
   });
@@ -1205,6 +1291,14 @@ function renderSkill(s, progs, D, MS, ET) {
   section(host, "At a glance", statRow([
     ["Cooldown", s.cooldown !== undefined ? secs(s.cooldown) : null],
     ["Range", range],
+    ["Induction", s.induction
+      ? secs(s.induction.duration) +
+        (s.induction.interruptable ? ", interruptable" : ", uninterruptable")
+      : null],
+    ["Channel", s.channel
+      ? secs(s.channel.duration) +
+        (s.channel.interruptedByMovement ? ", broken by movement" : "")
+      : null],
     ["Threat", s.threat],
     ["Pip change", s.pipChange],
     ["Resist", s.resistCategory],
@@ -1217,14 +1311,20 @@ function renderSkill(s, progs, D, MS, ET) {
   section(host, "Area of effect", areaBlock(s));
   section(host, "Positional", positionalBlock(s));
 
-  if (s.costs) {
+  if (s.costs || s.toggleCosts) {
     var t = el("table", "t");
     t.innerHTML = "<tr><th>Vital</th><th>Points</th><th>Percent</th><th>Scaling</th><th>Modifiers</th></tr>";
-    s.costs.forEach(function (c) {
+    (s.costs || []).concat((s.toggleCosts || []).map(function (c) {
+      var copy = {}, k;
+      for (k in c) if (Object.prototype.hasOwnProperty.call(c, k)) copy[k] = c[k];
+      copy.perSecond = true;
+      return copy;
+    })).forEach(function (c) {
       var tr = el("tr");
-      tr.innerHTML = "<td>" + esc(c.type || "-") + "</td>" +
+      tr.innerHTML = "<td>" + esc((vitalName(c.type) || "-") +
+          (c.perSecond ? " per second" : "")) + "</td>" +
         '<td class="num">' + fmt(c.points) + "</td>" +
-        '<td class="num">' + (c.percent === undefined ? "-" : fmt(c.percent) + "%") + "</td>" +
+        '<td class="num">' + (c.percent === undefined ? "-" : fmt(c.percent * 100, 3) + "%") + "</td>" +
         '<td class="num">' + (c.progression ? "progression " + c.progression : "-") + "</td>" +
         "<td></td>";
       // the modifier cell holds links, so it is built rather than templated
@@ -1234,7 +1334,7 @@ function renderSkill(s, progs, D, MS, ET) {
       t.appendChild(tr);
     });
     section(host, "Cost", t);
-    s.costs.forEach(function (c) {
+    (s.costs || []).forEach(function (c) {
       if (c.progression) progChart(host, progs, c.progression, (c.type || "Cost") + " cost");
     });
   }
@@ -1503,6 +1603,14 @@ function renderEffect(e, progs, MS, D, ET) {
     section(host, "Checks whether these are present",
             linkList(e.checksEffects, "effect"));
   }
+  // ...and the same three relationships seen from the other end. "What stops
+  // this landing on me" is the more useful direction, and only the effect
+  // doing it used to know the relationship existed at all.
+  [["preventedBy", "Prevented by these effects"],
+   ["removedBy", "Removed by these effects"],
+   ["checkedBy", "Checked for by these effects"]].forEach(function (pair) {
+    if (e[pair[0]]) section(host, pair[1], linkList(e[pair[0]], "effect"));
+  });
   // The same "Effect*" keys also name skills and traits. They used to be
   // listed as effects, which sent the reader to a page that does not exist.
   if (e.grantsSkills) {
@@ -1537,6 +1645,24 @@ function renderEffect(e, progs, MS, D, ET) {
             linkList(e.usedBySkills.filter(function (id) {
               return reachable(id, owners);
             }), "skill"));
+  }
+  // Skills that reach this effect through another effect. A Warden Morale-tap
+  // is applied by an over-time effect, and THAT is what the four skills cast,
+  // so without this the tap's page named no skill at all.
+  if (e.viaSkills) {
+    var via = e.viaSkills.filter(function (id) { return reachable(id, owners); });
+    if (via.length) {
+      var vbox = el("div");
+      vbox.appendChild(el("p", "muted",
+        "These cast an effect that applies this one, rather than applying it "
+        + "themselves."));
+      vbox.appendChild(linkList(via, "skill"));
+      if (e.viaSkillsMore) {
+        vbox.appendChild(el("p", "muted",
+          "and " + e.viaSkillsMore + " more not listed"));
+      }
+      section(host, "Applied indirectly by these skills", vbox);
+    }
   }
   // Skills that relate to this effect WITHOUT applying it. Listing these
   // under "applied by" claimed a skill casts the effect that blocks it.
@@ -2382,16 +2508,43 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
 
 /* Everything that reads a property: skill values, and other effects and traits
    that scale one of their own modifiers by it. */
+/* Six different effects in this dataset are called "Healing". Printed as a
+   run of identical links they read as one thing repeated, so where a name is
+   ambiguous inside a single run the id is shown after it - these ARE distinct
+   records, unlike the same-id repeats collapsed below. */
+function ambiguousNames(ids) {
+  var seen = {}, dup = {};
+  ids.forEach(function (id) {
+    var meta = nameOf(id);
+    var n = meta ? meta.n : null;
+    if (!n) return;
+    if (seen[n]) dup[n] = 1; else seen[n] = 1;
+  });
+  return dup;
+}
+function readerLink(id, kind, cls, dup) {
+  var meta = nameOf(id);
+  var name = meta ? meta.n : "#" + id;
+  var a = el("a", cls || null, name);
+  a.href = urlFor(kind + "/" + id);
+  if (meta && dup && dup[name]) a.appendChild(el("span", "idtag", "#" + id));
+  return a;
+}
+
 function readersCell(prop, MS, D, only) {
   var td = el("td");
   var src = (MS && MS[prop]) || {};
   var any = false;
   var SHOW = 10;
 
+  // Same story on the skill side: one row per value slot means a skill that
+  // scales two of its own numbers by this property arrived twice under the
+  // same field, and was listed twice under the same name.
   var byField = {};
   (src.skills || []).forEach(function (u) {
     if (!reachable(u[0], only)) return;
-    (byField[u[1]] = byField[u[1]] || []).push(u[0]);
+    var list = byField[u[1]] = byField[u[1]] || [];
+    if (list.indexOf(u[0]) === -1) list.push(u[0]);
   });
   // the capped-away count belongs to the property, so it is stated after the
   // last field rather than repeated under every one
@@ -2402,13 +2555,9 @@ function readersCell(prop, MS, D, only) {
     var line = el("div");
     line.appendChild(el("strong", null, field));
     line.appendChild(document.createTextNode(" on "));
+    var sdup = ambiguousNames(ids);
     line.appendChild(linkRun(ids.map(function (id) {
-      return function () {
-        var meta = nameOf(id);
-        var a = el("a", null, meta ? meta.n : "#" + id);
-        a.href = urlFor("skill/" + id);
-        return a;
-      };
+      return function () { return readerLink(id, "skill", null, sdup); };
     }), SHOW, fi === fields.length - 1 ? (src.skillsMore || 0) : 0));
     td.appendChild(line);
   });
@@ -2418,16 +2567,27 @@ function readersCell(prop, MS, D, only) {
       return reachable(r[0], only);
     });
     if (!rows.length) return;
+    // One row per FIELD the reader scales, so an effect that scales both its
+    // "Initial Change" and its "Change Per Interval" by this property arrived
+    // twice and was listed twice under the same name. It is one effect; the
+    // fields belong together on its hover, not as separate entries. 949 of
+    // the 8,175 reader rows were repeats of an id already on the line.
+    var order = [], fieldsById = {};
+    rows.forEach(function (r) {
+      var k = String(r[0]);
+      if (!fieldsById[k]) { fieldsById[k] = []; order.push(r[0]); }
+      if (r[1] && fieldsById[k].indexOf(r[1]) === -1) fieldsById[k].push(r[1]);
+    });
     any = true;
     var line = el("div");
     line.appendChild(el("strong", null, spec[2]));
     line.appendChild(document.createTextNode(" "));
-    line.appendChild(linkRun(rows.map(function (r) {
+    var rdup = ambiguousNames(order);
+    line.appendChild(linkRun(order.map(function (id) {
       return function () {
-        var meta = nameOf(r[0]);
-        var a = el("a", spec[1] === "effect" ? "eff" : null, meta ? meta.n : "#" + r[0]);
-        a.href = urlFor("" + spec[1] + "/" + r[0]);
-        a.title = "scales its " + r[1];
+        var a = readerLink(id, spec[1], spec[1] === "effect" ? "eff" : null, rdup);
+        var f = fieldsById[String(id)];
+        if (f.length) a.title = "scales its " + f.join(" and ");
         return a;
       };
     }), SHOW, src[spec[0] + "More"] || 0));
@@ -2665,6 +2825,17 @@ function topLevel(s, progs) {
   return Math.min(top || LEVEL_CAP, LEVEL_CAP);
 }
 
+/* The client does not call a vital by its enum name: MountPower is
+   "War-steed Power" and Health is "Morale". PropertyMetaData already holds
+   both, on the vital's own cap property - "Maximum War-steed Power" - so the
+   name is read from the game's data rather than hard-coded here. */
+function vitalName(type) {
+  if (!type) return "";
+  var meta = PROPS && PROPS[type + "_MaxLevel"];
+  if (meta && meta.n) return meta.n.replace(/^Maximum\s+/i, "");
+  return spaceWords(type);
+}
+
 function tipLine(host, label, value, cls) {
   if (value === null || value === undefined || value === "") return;
   var d = el("div", "tl" + (cls ? " " + cls : ""));
@@ -2686,21 +2857,32 @@ function tooltipPanel(s, progs, D, level) {
   head.appendChild(el("div", "tipname", s.name));
   box.appendChild(head);
 
-  // the client's top block: range on the right, then the two type lines
+  // The client's top block, in the client's order. The first row carries two
+  // things at once - the speed word on the left, the range pushed to the right
+  // edge - and everything else is one line each below it:
+  //
+  //   Fast                                    40m Range
+  //   Tactical Skill
+  //   Max targets: 8
+  //   Radius: 10m
+  //   Resistance: Cry
+  //   Skill Type: Cry
+  //
+  // Induction is NOT up here: it belongs with the cost and cooldown at the
+  // foot, and printing it in both places said the same thing twice.
   var top = el("div", "tipbody");
+  // There is no "Fast" flag in the data because Fast is the default:
+  // Skill_Immediate is the only thing that moves a skill off it, and 146 of
+  // the 13,323 skills set it. It is separate from induction - a skill can have
+  // an induction and still be Fast.
+  var row0 = el("div", "tl tiprow0");
+  row0.appendChild(el("span", "tv", s.immediate ? "Immediate" : "Fast"));
   if (s.maxRange !== undefined) {
-    tipLine(top, null, (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
-                       fmt(s.maxRange) + "m Range");
+    row0.appendChild(el("span", "tv tipright",
+      (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
+      fmt(s.maxRange) + "m Range"));
   }
-  if (s.aeSphereRadius !== undefined) {
-    tipLine(top, null, fmt(s.aeSphereRadius) + "m Radius");
-  }
-  if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
-  if (s.aeArcDegrees) tipLine(top, null, fmt(s.aeArcDegrees) + " degree arc");
-  if (s.induction) tipLine(top, null, fmt(s.induction.duration) + "s Induction");
-  if (s.resistCategory) {
-    tipLine(top, null, "Resistance: " + titleCase(s.resistCategory));
-  }
+  top.appendChild(row0);
   // Skill_AnimationMode is the ANIMATION, not the combat category: Wizard's
   // Frost animates as "Melee" while the client calls it a Tactical Skill. A
   // hook that draws on tactical damage is what makes it tactical - 156 skills
@@ -2708,6 +2890,28 @@ function tooltipPanel(s, progs, D, level) {
   var mode = (s.attacks || []).some(function (a) { return a.usesTactical; })
     ? "Tactical" : s.animationMode;
   if (mode) tipLine(top, null, titleCase(mode) + " Skill");
+  if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
+  if (s.aeSphereRadius !== undefined) {
+    tipLine(top, "Radius:", fmt(s.aeSphereRadius) + "m");
+  }
+  if (s.aeArcDegrees) tipLine(top, "Arc:", fmt(s.aeArcDegrees) + " degrees");
+  // The client puts the induction here, between the radius and the resistance,
+  // and words it as bare seconds in the same grey as the rest of the block -
+  // the green "time" colour belongs to the cooldown at the foot. Whether it
+  // can be interrupted is on the page below, not on the panel.
+  if (s.induction) {
+    tipLine(top, "Induction:", secs(s.induction.duration));
+  }
+  // A channel is not a toggle: Still As Death runs for Channeling_Duration and
+  // then ends. The state it points at is the only place that number lives.
+  if (s.channel) {
+    tipLine(top, "Channel Duration:", secs(s.channel.duration));
+  }
+  if (s.resistCategory) {
+    tipLine(top, null, "Resistance: " + (Array.isArray(s.resistCategory)
+      ? s.resistCategory.map(titleCase).join(", ")
+      : titleCase(s.resistCategory)), "tipresist");
+  }
   var shown = (s.displayType || []).map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
   });
@@ -2732,18 +2936,37 @@ function tooltipPanel(s, progs, D, level) {
   effectBlocks(s, progs, level).forEach(function (blk) { box.appendChild(blk); });
 
   var foot = el("div", "tipbody cost");
-  (s.costs || []).forEach(function (c) {
+  function costText(c, suffix) {
     var v = c.points !== undefined ? c.points : progAt(progs, c.progression, level);
-    var txt = v === null || v === undefined
-      ? (c.percent !== undefined ? fmt(c.percent) + "% of your " + (c.type || "vital") : null)
-      : num(v) + " " + (c.type || "");
-    tipLine(foot, "Cost:", txt);
+    if (v === null || v === undefined) {
+      // Skill_Vital_Percent is a fraction, not a percentage: Warden's Triumph
+      // stores 0.025 and the client prints "2.5% of your Morale". Printing it
+      // straight read as "0.03%" - out by a factor of a hundred.
+      return c.percent === undefined ? null
+        : fmt(c.percent * 100, 3) + "% of your " + (vitalName(c.type) || "vital") + suffix;
+    }
+    return num(v) + " " + vitalName(c.type) + suffix;
+  }
+  (s.costs || []).forEach(function (c) {
+    tipLine(foot, "Cost:", costText(c, ""));
+  });
+  // Skill_Toggle_VitalCostPerSecondList - what the skill drains for as long as
+  // it stays on. Spur On costs 640 War-steed Power to start and 10 a second to
+  // hold; only the first was on the panel. 47 skills have one.
+  (s.toggleCosts || []).forEach(function (c) {
+    tipLine(foot, "Cost:", costText(c, " Per Second"));
   });
   // The client prints "Toggle Skill" straight after the cost, and without it
   // nothing on the panel says the skill stays on once used. A non-empty
   // Skill_Toggle_Effect_List is exactly what marks one - 1,583 skills, and
   // the emitted toggleEffects list matches it one for one.
-  if (s.toggleEffects && s.toggleEffects.length) {
+  // A skill with a channeling state holds its effects for a fixed time and
+  // then drops them; the client calls that a Channel Skill, not a Toggle
+  // Skill. The channeling state is the marker, not the toggle effect list -
+  // two of the 171 channels carry no toggle effects of their own.
+  if (s.channel) {
+    tipLine(foot, null, "Channel Skill");
+  } else if (s.toggleEffects && s.toggleEffects.length) {
     tipLine(foot, null, "Toggle Skill");
   }
   if (s.gambitAdds) {
@@ -2764,10 +2987,6 @@ function tooltipPanel(s, progs, D, level) {
     if (grm) foot.appendChild(grm);
   } else if (s.clearsGambits) {
     tipLine(foot, null, "Clears All Gambits");
-  }
-  if (s.induction) {
-    tipLine(foot, "Induction:", fmt(s.induction.duration) + "s" +
-      (s.induction.interruptable ? ", interruptable" : ""), "time");
   }
   if (s.cooldown !== undefined) {
     tipLine(foot, "Cooldown:", secs(s.cooldown), "time");
@@ -2963,6 +3182,33 @@ function classOfNature(nature, D) {
   return null;
 }
 
+/* One effect on a trait's rank block, and whatever it nests. The client
+   prints the effect's own wording and then its modifier lines, in the same
+   green as the rest of the rank - it does not print the effect's name here,
+   so neither does this. */
+function traitEffectLines(id, progs, level, depth, seen) {
+  var out = [];
+  if (depth > 3) return out;
+  seen = seen || {};
+  if (seen[id]) return out;
+  seen[id] = 1;
+  var e = EFFECT_CACHE[String(id)];
+  if (!e) return out;
+  var text = e.descOverride || e.desc;
+  if (text) {
+    var d = multiLine("tipstat", text);
+    if (d) out.push(d);
+  }
+  (e.stats || []).forEach(function (st) {
+    var line = statLine(resolveStat(st, progs, level), "level");
+    if (line) out.push(line);
+  });
+  traitTipNested(e).forEach(function (n) {
+    out = out.concat(traitEffectLines(n.id, progs, level, depth + 1, seen));
+  });
+  return out;
+}
+
 function traitTooltip(t, progs, D, level, maxRank) {
   var box = el("div", "tip trait");
 
@@ -3002,9 +3248,17 @@ function traitTooltip(t, progs, D, level, maxRank) {
 
   for (var r = 1; r <= top; r++) {
     var blk = el("div", "tiprank" + (r === 1 ? " first" : ""));
-    if (top > 1) blk.appendChild(el("div", "rl", "Rank: " + r));
+    // The client heads every rank block, single-rank traits included - A
+    // Watched Pot's one block reads "Rank: 1" in game.
+    blk.appendChild(el("div", "rl", "Rank: " + r));
     var any = false;
     stats.forEach(function (st) {
+      // A modifier with no curve is granted once, when the trait is first
+      // taken - it is not re-granted at every rank. Repeating it made
+      // Enervating Counter's rank 2 read "After Blade Shield, Riposte
+      // increases the damage your target receives." again instead of the
+      // +2.5% the rank actually buys. The client lists only what the rank adds.
+      if (r > 1 && !st.progression) return;
       var line = statLine(resolveStat(st, progs, r, level), "rank");
       if (!line) return;
       // Every rank reads the same colour in the client - sampled off a
@@ -3014,9 +3268,18 @@ function traitTooltip(t, progs, D, level, maxRank) {
       blk.appendChild(line);
       any = true;
     });
+    // The effects this rank puts on you. These used to be left out on the
+    // belief that the client does not list them - A Watched Pot proves
+    // otherwise: its entire rank 1 is an effect's wording plus its nested
+    // effect's line, and without them the block rendered empty.
+    (t.effects || []).forEach(function (g) {
+      if ((g.rank || 1) !== r) return;
+      traitEffectLines(g.id, progs, level, 0, {}).forEach(function (node) {
+        blk.appendChild(node);
+        any = true;
+      });
+    });
     // "Skills Earned:" and then the skills, the way the client words it.
-    // Effects are left out: the client does not list them here, and the page
-    // below has a section of its own for them.
     var earned = (t.skills || []).filter(function (g) {
       return (g.rank || 1) === r;
     });
@@ -3219,6 +3482,13 @@ function statWording(st, meta) {
    flag come from the property's own metadata, which is how the client writes
    these - but where the modifier carries its own wording, that wins. */
 function statLine(st, xLabel) {
+  // Mod_DescriptionOverride set to "(NONE)" or to a blank string is the
+  // author switching this line off, and the client honours that: Timeless
+  // Echoes of Battle words its Song modifier "- * Target Song and Cry Resist
+  // Rating" and silences the sibling Cry modifier, because the one line
+  // already covers both. 6,257 effect modifiers and 830 trait modifiers are
+  // marked this way - most of them flag properties with no number to show.
+  if (st.silent) return null;
   var meta = PROPS && PROPS[st.stat];
   var name = meta ? meta.n : st.stat;
   var v = st.value;
@@ -4061,16 +4331,22 @@ function route() {
       // a trait modifier can be scaled by a property an item set grants
       SETS = res[3] || {};
       PROPS = res[4] || {};
-      detail.textContent = "";
       var rec = what === "class" ? D.classes[String(cid)] : D.traits[String(cid)];
       if (!rec) {
+        detail.textContent = "";
         detail.appendChild(el("div", "empty", "No " + what + " with id " + cid + "."));
         return;
       }
-      detail.appendChild(what === "class" ? renderClass(rec, D)
-                                          : renderTrait(rec, D, MS, progs));
-      detail.scrollTop = 0;
-      document.title = rec.name + " - LOTRO Skills and Effects";
+      // A trait panel quotes its effects' wording, so those records have to
+      // be in hand before it is drawn.
+      var pre = what === "class" ? Promise.resolve() : preloadTraitEffects(rec);
+      pre.then(function () {
+        detail.textContent = "";
+        detail.appendChild(what === "class" ? renderClass(rec, D)
+                                            : renderTrait(rec, D, MS, progs));
+        detail.scrollTop = 0;
+        document.title = rec.name + " - LOTRO Skills and Effects";
+      });
     });
     runSearch();
     return;

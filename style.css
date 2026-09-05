@@ -211,6 +211,9 @@ table.t img.inline {
 }
 
 a.eff { color: var(--info); }
+/* Distinct records that share a display name - six effects are called
+   "Healing" - carry their id so a run of them is not one name repeated. */
+.idtag { margin-left: 4px; font: 10px var(--mono); color: var(--ink-3); opacity: .75; }
 table.t td .via { margin-left: 8px; }
 
 .setbonus { margin: 8px 0 0 14px; padding-left: 12px; border-left: 1px solid var(--border); }
@@ -319,6 +322,10 @@ a.ess { color: #86b06b; }
 .tip .tl.time, .tip .tl.time .tv, .tip .tl.time .tk { color: var(--tip-time); }
 .tip .tl.pip, .tip .tl.pip .tv, .tip .tl.pip .tk { color: var(--tip-pip); }
 .tip .tl.tipresist { color: var(--tip-resist); }
+/* The client's first tooltip row holds two things: the speed word on the left
+   and the range hard against the right edge. */
+.tip .tl.tiprow0 { display: flex; justify-content: space-between; gap: 16px; }
+.tip .tl.tiprow0 .tipright { text-align: right; }
 .tip .tk { color: var(--tip-stat); margin-right: 4px; }
 .tip .tv { color: var(--tip-stat); }
 .tip .tipbody.cost .tl, .tip .tipbody.cost .tv { color: var(--tip-cost); }
