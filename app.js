@@ -118,6 +118,8 @@ function modSources() { return sideFile("modSources"); }
 function gambitData() { return sideFile("gambits"); }
 function itemSetData() { return sideFile("itemsets"); }
 function stackingData() { return sideFile("stacking"); }
+function skillChannelData() { return sideFile("skillChannels"); }
+var CHANNELS = null;
 var STACKING = null;
 var SETS = null;
 function propertyData() { return sideFile("properties"); }
@@ -648,9 +650,18 @@ function capCurve(pts, cap) {
   return out.length >= 1 ? out : pts;
 }
 
-function curvePoints(p, cap) {
+function curvePoints(p, cap, progs, level) {
   if (!p) return null;
   var pts;
+  if (p.type === "nested") {
+    // one point per rank, each read at the level the reader has chosen
+    var base = p.minIndex === undefined ? 1 : p.minIndex;
+    pts = (p.inner || []).map(function (id, i) {
+      return [base + i, progAt(progs, id,
+                               level === undefined ? LEVEL_CAP : level)];
+    }).filter(function (q) { return typeof q[1] === "number"; });
+    return pts.length ? trimPadding(pts) : null;
+  }
   if (p.type === "linear") {
     pts = p.points.filter(function (pt) {
       return typeof pt[0] === "number" && typeof pt[1] === "number";
@@ -1421,9 +1432,76 @@ function renderEffect(e, progs, MS, D, ET) {
 
   if (D && MS) section(host, "Modifiers", modsBlock(e, D, MS));
 
+  // A cooldown effect names recovery channels - internal groupings like
+  // "ClassSkillLine_29" - and printing those said nothing. These are the
+  // skills on them.
+  //
+  // The channels are NOT class-scoped in the data: ClassSkillLine_19 holds 23
+  // Captain skills and one Burglar one. The game resolves a channel against
+  // the caster's own skills, so the raw list is mostly other people's. Scope
+  // it to whoever can actually get this effect.
+  if (e.cooldownChannels && CHANNELS) {
+    var cdAll = [], seenCd = {};
+    e.cooldownChannels.forEach(function (ch) {
+      (CHANNELS[ch] || []).forEach(function (id) {
+        if (!seenCd[id]) { seenCd[id] = 1; cdAll.push(id); }
+      });
+    });
+    cdAll.sort(function (a, b) {
+      var x = nameOf(a), y = nameOf(b);
+      return (x ? x.n : "").localeCompare(y ? y.n : "");
+    });
+    if (cdAll.length) {
+      var mine = owners.length ? cdAll.filter(function (id) {
+        return owners.some(function (c) { return belongsTo(id, c); });
+      }) : cdAll;
+      // no owner class, or nothing attributable: scoping has no basis, so
+      // showing everything beats showing nothing
+      var canScope = mine.length > 0 && mine.length < cdAll.length;
+      var cdWrap = el("div");
+      var cdScoped = true;
+      var drawCd = function () {
+        cdWrap.textContent = "";
+        cdWrap.appendChild(linkList(cdScoped && canScope ? mine : cdAll, "skill"));
+        if (!canScope) return;
+        var hid = cdAll.length - mine.length;
+        var foot = el("div", "muted");
+        foot.style.cssText = "font-size:11.5px;margin-top:6px";
+        foot.appendChild(document.createTextNode(cdScoped
+          ? hid + " more skill" + (hid === 1 ? "" : "s") + " share these "
+            + "channels but belong to other classes.  "
+          : "Showing every class.  "));
+        var a = el("a", null, cdScoped ? "show all" : "show only this class");
+        a.href = "#";
+        a.onclick = function (ev) {
+          ev.preventDefault(); cdScoped = !cdScoped; drawCd(); return false;
+        };
+        foot.appendChild(a);
+        cdWrap.appendChild(foot);
+      };
+      drawCd();
+      section(host, e.cooldownMod
+        ? "Reduces the cooldown of these skills by " + secs(e.cooldownMod)
+        : "Reduces the cooldown of these skills", cdWrap);
+    }
+  }
+
   if (e.nested) {
     section(host, "Applies these effects",
             linkList(e.nested, "effect", traceryLine(ET, gearOk)));
+  }
+  // The other three things a nested reference can mean. These used to be
+  // listed as applications, which said the opposite of the truth: a
+  // protection effect claimed to cast the very effect it blocks.
+  if (e.preventsEffects) {
+    section(host, "Prevents these effects", linkList(e.preventsEffects, "effect"));
+  }
+  if (e.dispelsEffects) {
+    section(host, "Removes these effects", linkList(e.dispelsEffects, "effect"));
+  }
+  if (e.checksEffects) {
+    section(host, "Checks whether these are present",
+            linkList(e.checksEffects, "effect"));
   }
   // The same "Effect*" keys also name skills and traits. They used to be
   // listed as effects, which sent the reader to a page that does not exist.
@@ -1460,6 +1538,17 @@ function renderEffect(e, progs, MS, D, ET) {
               return reachable(id, owners);
             }), "skill"));
   }
+  // Skills that relate to this effect WITHOUT applying it. Listing these
+  // under "applied by" claimed a skill casts the effect that blocks it.
+  [["requiredBySkills", "Required by these skills"],
+   ["barsSkills", "Bars these skills"],
+   ["consumedBySkills", "Consumed by these skills"]].forEach(function (pair) {
+    if (!e[pair[0]]) return;
+    section(host, pair[1], linkList(e[pair[0]].filter(function (id) {
+      return reachable(id, owners);
+    }), "skill"));
+  });
+
   if (e.appliedByTraits && D) {
     section(host, "Applied by these traits",
             traitList(e.appliedByTraits.filter(function (id) {
@@ -1629,18 +1718,29 @@ function traitGrid(cells, D) {
     });
     return ul;
   }
-  var cols = 0;
+  // A cell's position is its place in the WHOLE tree, and each branch owns a
+  // slice of it - the three branches sit in columns 1-4, 5-8 and 9-12. Using
+  // those numbers directly built a twelve-column grid per branch and dropped
+  // the third one's traits into the last four, hard right and a twelfth of the
+  // width each. Every branch is drawn on its own axes instead.
+  var minRow = Infinity, maxRow = 0, minCol = Infinity, maxCol = 0;
   placed.forEach(function (c) {
-    cols = Math.max(cols, parseInt(c.cell.split("_")[1], 10));
+    var q = c.cell.split("_");
+    var r = parseInt(q[0], 10), k = parseInt(q[1], 10);
+    minRow = Math.min(minRow, r); maxRow = Math.max(maxRow, r);
+    minCol = Math.min(minCol, k); maxCol = Math.max(maxCol, k);
   });
+  var cols = maxCol - minCol + 1;
   var grid = el("div", "ttree");
-  grid.style.gridTemplateColumns = "repeat(" + cols + ", minmax(0, 1fr))";
+  // fixed tracks, not fractions: a cell has a name in it and should be the
+  // same size whatever the panel width happens to be
+  grid.style.gridTemplateColumns = "repeat(" + cols + ", var(--tcell))";
   placed.forEach(function (cell) {
     var t = D.traits[String(cell.trait)];
     var pos = cell.cell.split("_");
     var a = el("a", "tcell");
-    a.style.gridRow = pos[0];
-    a.style.gridColumn = pos[1];
+    a.style.gridRow = parseInt(pos[0], 10) - minRow + 1;
+    a.style.gridColumn = parseInt(pos[1], 10) - minCol + 1;
     a.href = urlFor("trait/" + (t ? t.id : cell.trait));
     var img = el("img");
     img.src = iconUrl(t ? t.icon : 0);
@@ -1803,11 +1903,39 @@ function renderClass(c, D) {
       var cells = (byBranch[br.key] || []).slice().sort(cellSort);
       if (!cells.length) return;
       var hh = el("div", "branch");
-      hh.appendChild(el("div", "bn", branchName(br.key, br.name)));
+      // The branch heading IS a trait - the specialisation you take to commit
+      // to the line - and it was the one thing on this page with no way into
+      // it. Its own page carries the numbers.
+      var spec = br.specTrait ? D.traits[String(br.specTrait)] : null;
+      var bn = el("div", "bn");
+      if (spec) {
+        var ba = el("a", null, branchName(br.key, br.name));
+        ba.href = urlFor("trait/" + br.specTrait);
+        bn.appendChild(ba);
+      } else {
+        bn.textContent = branchName(br.key, br.name);
+      }
+      hh.appendChild(bn);
       if (br.desc) {
         var d = el("div", "muted");
         d.appendChild(richText(br.desc));
         hh.appendChild(d);
+      }
+      // Specialising in a line hands you skills outright. They sit on the
+      // specialisation trait, which is in no tree cell and no set bonus, so
+      // nothing on this page mentioned them at all.
+      if (spec && spec.skills && spec.skills.length) {
+        var sl = el("div", "specskills");
+        sl.appendChild(el("span", "sk", "Specialising grants:"));
+        sl.appendChild(linkRun(spec.skills.map(function (g) {
+          return function () {
+            var meta = nameOf(g.id);
+            var a = el("a", null, meta ? meta.n : "#" + g.id);
+            a.href = urlFor("skill/" + g.id);
+            return a;
+          };
+        }), 6, 0));
+        hh.appendChild(sl);
       }
       hh.appendChild(traitGrid(cells, D));
 
@@ -1856,6 +1984,12 @@ function renderClass(c, D) {
       addGrant(cell.trait, branchName(cell.branch, cell.branchName) + " " + cell.cell);
     });
     (tree.branches || []).forEach(function (br) {
+      // the specialisation trait itself - 30 of the 36 branches grant skills
+      // this way, and none of them were reaching this table
+      if (br.specTrait) {
+        addGrant(br.specTrait,
+                 "specialising in " + branchName(br.key, br.name));
+      }
       (br.setBonuses || []).forEach(function (bonus) {
         addGrant(bonus.trait, branchName(br.key, br.name) + " set, " + bonus.points + " points");
       });
@@ -1932,33 +2066,30 @@ function renderTrait(t, D, MS, progs) {
   // The wording used to sit here as loose paragraphs; it belongs in the panel,
   // the way it does on a skill and an effect page.
   var maxRank = traitMaxRank(t, progs);
-  var rank = Math.min(maxRank, Math.max(1, parseInt(PREFS.traitRank, 10) || 1));
+  var tlvl = preferredLevel(LEVEL_CAP);
   var tipWrap = el("div");
   function drawTraitTip() {
     tipWrap.textContent = "";
-    tipWrap.appendChild(traitTooltip(t, progs, rank));
-    if (maxRank <= 1 || !traitUsesRank(t, progs)) return;
+    tipWrap.appendChild(traitTooltip(t, progs, D, tlvl, maxRank));
+    if (!traitUsesRank(t, progs)) return;
+    // Every rank is on the panel already; what is left to choose is the
+    // character level those ranked curves are read at.
     var ctl = el("div", "tipctl");
-    ctl.appendChild(el("span", "muted", "at rank "));
+    ctl.appendChild(el("span", "muted", "at level "));
     var input = el("input");
     input.type = "number";
     input.min = "1";
-    input.max = String(maxRank);
-    input.value = String(rank);
+    input.max = String(LEVEL_CAP);
+    input.value = String(tlvl);
     input.oninput = function () {
       var v = parseInt(input.value, 10);
       if (isNaN(v) || v < 1) return;
-      rank = Math.min(v, maxRank);
-      // remembered, because someone reading a trait tree is comparing the
-      // same rank across a dozen traits
-      PREFS.traitRank = rank;
-      savePrefs();
+      tlvl = Math.min(v, LEVEL_CAP);
       drawTraitTip();
       var i = tipWrap.querySelector("input");
       if (i) i.focus();
     };
     ctl.appendChild(input);
-    ctl.appendChild(el("span", "muted", "of " + maxRank));
     tipWrap.appendChild(ctl);
   }
   drawTraitTip();
@@ -2241,7 +2372,8 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
     stats.forEach(function (st) {
       if (!st.progression) return;
       var pts = curvePoints(progs[String(st.progression)],
-                            (xLabel || "Level") === "Level" ? LEVEL_CAP : 0);
+                            (xLabel || "Level") === "Level" ? LEVEL_CAP : 0,
+                            progs, preferredLevel(LEVEL_CAP));
       if (pts && pts.length) wrap.appendChild(chart(pts, st.stat, xLabel));
     });
   }
@@ -2475,28 +2607,40 @@ function procBlock(s, D) {
    on the character's weapon and mastery, so it is written with those as named
    variables and explained underneath. */
 
-function progAt(progs, id, level) {
+/* `index` is whatever the curve is indexed BY - character level for a skill or
+   an effect, trait RANK for a trait. A nested curve needs both numbers: the
+   outer array is indexed by rank and names an inner curve, which is then read
+   at the character's level. */
+function progAt(progs, id, index, level) {
   var pr = progs && progs[String(id)];
   if (!pr) return null;
-  level = Math.min(level, LEVEL_CAP);
+  if (pr.type === "nested") {
+    var base = pr.minIndex === undefined ? 1 : pr.minIndex;
+    var inner = pr.inner || [];
+    var pick = Math.max(0, Math.min(inner.length - 1, index - base));
+    if (!inner[pick]) return null;
+    return progAt(progs, inner[pick],
+                  level === undefined ? LEVEL_CAP : level);
+  }
+  var at = Math.min(index, LEVEL_CAP);
   if (pr.type === "linear") {
     var pts = (pr.points || []).filter(function (q) {
       return typeof q[0] === "number" && typeof q[1] === "number";
     });
     if (!pts.length) return null;
-    if (level <= pts[0][0]) return pts[0][1];
+    if (at <= pts[0][0]) return pts[0][1];
     for (var i = 1; i < pts.length; i++) {
-      if (level <= pts[i][0]) {
+      if (at <= pts[i][0]) {
         var a = pts[i - 1], b = pts[i];
-        var t = (level - a[0]) / ((b[0] - a[0]) || 1);
-        return a[1] + (b[1] - a[1]) * t;
+        var f = (at - a[0]) / ((b[0] - a[0]) || 1);
+        return a[1] + (b[1] - a[1]) * f;
       }
     }
     return pts[pts.length - 1][1];
   }
   var vals = pr.values || [];
   var min = pr.minIndex === undefined ? 1 : pr.minIndex;
-  var idx = Math.max(0, Math.min(vals.length - 1, level - min));
+  var idx = Math.max(0, Math.min(vals.length - 1, at - min));
   return vals.length ? vals[idx] : null;
 }
 
@@ -2557,7 +2701,13 @@ function tooltipPanel(s, progs, D, level) {
   if (s.resistCategory) {
     tipLine(top, null, "Resistance: " + titleCase(s.resistCategory));
   }
-  if (s.animationMode) tipLine(top, null, titleCase(s.animationMode) + " Skill");
+  // Skill_AnimationMode is the ANIMATION, not the combat category: Wizard's
+  // Frost animates as "Melee" while the client calls it a Tactical Skill. A
+  // hook that draws on tactical damage is what makes it tactical - 156 skills
+  // were labelled by the wrong one.
+  var mode = (s.attacks || []).some(function (a) { return a.usesTactical; })
+    ? "Tactical" : s.animationMode;
+  if (mode) tipLine(top, null, titleCase(mode) + " Skill");
   var shown = (s.displayType || []).map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
   });
@@ -2579,7 +2729,7 @@ function tooltipPanel(s, progs, D, level) {
   });
   if (dmg.children.length) box.appendChild(dmg);
 
-  effectBlocks(s, level).forEach(function (blk) { box.appendChild(blk); });
+  effectBlocks(s, progs, level).forEach(function (blk) { box.appendChild(blk); });
 
   var foot = el("div", "tipbody cost");
   (s.costs || []).forEach(function (c) {
@@ -2589,6 +2739,13 @@ function tooltipPanel(s, progs, D, level) {
       : num(v) + " " + (c.type || "");
     tipLine(foot, "Cost:", txt);
   });
+  // The client prints "Toggle Skill" straight after the cost, and without it
+  // nothing on the panel says the skill stays on once used. A non-empty
+  // Skill_Toggle_Effect_List is exactly what marks one - 1,583 skills, and
+  // the emitted toggleEffects list matches it one for one.
+  if (s.toggleEffects && s.toggleEffects.length) {
+    tipLine(foot, null, "Toggle Skill");
+  }
   if (s.gambitAdds) {
     var ga = gambitRow(s.gambitAdds, "Builds");
     if (ga) foot.appendChild(ga);
@@ -2632,7 +2789,7 @@ function tooltipPanel(s, progs, D, level) {
    box: what it does, for how long, and what it changes - the property lines
    come from the same PropertyMetaData the skill panel uses. */
 function effectTooltip(e, progs, D, level) {
-  var box = el("div", "tip");
+  var box = el("div", "tip" + (e.harmful ? " harm" : ""));
 
   var head = el("div", "tiphead");
   var img = el("img");
@@ -2682,8 +2839,11 @@ function effectTooltip(e, progs, D, level) {
       tipLine(body, null, "Critical multiplier x" + fmt(v.critMultiplier));
     }
   }
+  // Resolve the curve at the chosen level. Without this the panel printed
+  // "Scales with level: Finesse Rating" while a level box sat directly
+  // underneath it - the one thing on screen that could have answered it.
   (e.stats || []).forEach(function (st) {
-    var line = statLine(st);
+    var line = statLine(resolveStat(st, progs, level), "level");
     if (line) body.appendChild(line);
   });
   if (body.children.length) box.appendChild(body);
@@ -2757,9 +2917,9 @@ function chanceSource(e) {
 /* A modifier that carries a curve instead of a flat value. statLine can only
    print what it is given, so fill the value in from the curve at the index the
    reader has chosen - level for a skill or effect, RANK for a trait. */
-function resolveStat(st, progs, index) {
+function resolveStat(st, progs, index, level) {
   if (st.value !== undefined || !st.progression) return st;
-  var v = progAt(progs, st.progression, index);
+  var v = progAt(progs, st.progression, index, level);
   if (v === null || v === undefined) return st;
   var copy = {};
   for (var k in st) copy[k] = st[k];
@@ -2770,10 +2930,13 @@ function resolveStat(st, progs, index) {
 /* How far a trait's ranks actually run: the end of its own curves, and any
    rank at which it hands over a skill or an effect. */
 function traitMaxRank(t, progs) {
+  // The client stores the answer. Guessing it from a curve's length is wrong:
+  // modifier arrays are padded to a fixed width and repeat their last value.
+  if (t.maxRank) return t.maxRank;
   var top = 1;
   (t.stats || []).forEach(function (st) {
     if (!st.progression) return;
-    var pts = curvePoints(progs && progs[String(st.progression)], 0);
+    var pts = curvePoints(progs && progs[String(st.progression)], 0, progs);
     if (pts && pts.length) top = Math.max(top, pts[pts.length - 1][0]);
   });
   (t.skills || []).concat(t.effects || []).forEach(function (g) {
@@ -2782,13 +2945,26 @@ function traitMaxRank(t, progs) {
   return top;
 }
 
-/* The trait panel, built the way the skill and effect ones are. A trait is the
-   only thing on the site that had no tooltip of its own, so its numbers were
-   only ever readable as a table of raw property names - and the table cannot
-   say what one RANK of it is worth, which is the thing a player is choosing
-   between when they spend a point. */
-function traitTooltip(t, progs, rank) {
-  var box = el("div", "tip");
+/* The trait panel, laid out the way the client lays it out: the description
+   once, then EVERY earnable rank in turn with what it is worth. A trait is
+   bought a rank at a time, so the ladder IS the thing being read - one rank in
+   isolation cannot answer "is the next point worth it".
+
+   Values depend on level as well as rank, because a trait modifier is usually
+   a progression of progressions: the outer array picks a curve by rank, and
+   that curve is then read at the character's level. */
+function classOfNature(nature, D) {
+  if (!nature || !D || !D.classes) return null;
+  var code = String(nature).replace(/^Class_/, "");
+  var keys = Object.keys(D.classes);
+  for (var i = 0; i < keys.length; i++) {
+    if (D.classes[keys[i]].code === code) return D.classes[keys[i]];
+  }
+  return null;
+}
+
+function traitTooltip(t, progs, D, level, maxRank) {
+  var box = el("div", "tip trait");
 
   var head = el("div", "tiphead");
   var img = el("img");
@@ -2796,11 +2972,17 @@ function traitTooltip(t, progs, rank) {
   img.alt = "";
   img.onerror = function () { this.style.visibility = "hidden"; };
   head.appendChild(img);
-  var nm = el("div");
-  nm.appendChild(el("div", "tipname", t.name));
-  if (t.tier) nm.appendChild(el("div", "tipsub", "Tier " + t.tier));
-  head.appendChild(nm);
+  head.appendChild(el("div", "tipname", t.name));
   box.appendChild(head);
+
+  // the client's second line: whose trait it is, and how far it goes
+  var who = classOfNature(t.nature, D);
+  var whoLine = el("div", "tipwho");
+  whoLine.appendChild(el("span", "tipclass", who ? who.name
+    : titleCase(String(t.nature || "").replace("Class_", ""))));
+  whoLine.appendChild(el("span", "tiprankmax",
+    maxRank > 1 ? "Ranks: " + maxRank : "Single rank"));
+  box.appendChild(whoLine);
 
   var said = {};
   [t.desc, t.tooltip].forEach(function (w) {
@@ -2811,40 +2993,82 @@ function traitTooltip(t, progs, rank) {
     box.appendChild(d);
   });
 
-  var body = el("div", "tipbody");
-  (t.stats || []).forEach(function (st) {
-    var line = statLine(resolveStat(st, progs, rank), "rank");
-    if (line) body.appendChild(line);
-  });
-  if (body.children.length) box.appendChild(body);
-
-  // what this rank hands you, which is the other half of the choice
-  var gains = el("div", "tipbody");
-  [["skills", "skill", "Grants"], ["effects", "effect", "Applies"]]
-    .forEach(function (spec) {
-      var at = (t[spec[0]] || []).filter(function (g) {
-        return (g.rank || 1) <= rank;
-      });
-      if (!at.length) return;
-      var line = el("div", "tl");
-      line.appendChild(el("span", "tk", spec[2] + ":"));
-      var run = el("span", "tv");
-      run.appendChild(linkRun(at.map(function (g) {
-        return function () {
-          var meta = nameOf(g.id);
-          var a = el("a", spec[1] === "effect" ? "eff" : null,
-                     meta ? meta.n : "#" + g.id);
-          a.href = urlFor(spec[1] + "/" + g.id);
-          if (g.rank) a.title = "from rank " + g.rank;
-          return a;
-        };
-      }), 4, 0));
-      line.appendChild(run);
-      gains.appendChild(line);
+  var stats = t.stats || [];
+  var ranked = stats.some(function (st) { return st.progression; }) ||
+    (t.skills || []).concat(t.effects || []).some(function (g) {
+      return g && g.rank > 1;
     });
-  if (gains.children.length) box.appendChild(gains);
+  var top = ranked ? maxRank : 1;
 
-  if (t.minLevel) {
+  for (var r = 1; r <= top; r++) {
+    var blk = el("div", "tiprank" + (r === 1 ? " first" : ""));
+    if (top > 1) blk.appendChild(el("div", "rl", "Rank: " + r));
+    var any = false;
+    stats.forEach(function (st) {
+      var line = statLine(resolveStat(st, progs, r, level), "rank");
+      if (!line) return;
+      // Every rank reads the same colour in the client - sampled off a
+      // screenshot at #99FF00, first rank included. Painting rank 1 pale was
+      // my own invention.
+      line.className = "tipstat";
+      blk.appendChild(line);
+      any = true;
+    });
+    // "Skills Earned:" and then the skills, the way the client words it.
+    // Effects are left out: the client does not list them here, and the page
+    // below has a section of its own for them.
+    var earned = (t.skills || []).filter(function (g) {
+      return (g.rank || 1) === r;
+    });
+    if (earned.length) {
+      var box2 = el("div", "tipearned");
+      box2.appendChild(el("div", null, "Skills Earned:"));
+      earned.forEach(function (g) {
+        var meta = nameOf(g.id);
+        var row = el("div");
+        var a = el("a", null, meta ? meta.n : "#" + g.id);
+        a.href = urlFor("skill/" + g.id);
+        row.appendChild(a);
+        box2.appendChild(row);
+      });
+      blk.appendChild(box2);
+      any = true;
+    }
+    if (!any) continue;
+    box.appendChild(blk);
+
+    // The client prints "2 Points to Next Rank" here. Trait_PointBasedTrait_
+    // PointCostProgression - the only cost curve on the trait - reads a flat
+    // 1.0 at every rank, so it is not the number the client is showing and
+    // something else feeds that line. Printing "1 Point" would be worse than
+    // printing nothing, so this stays out until the real source is found.
+  }
+
+  // What has to be slotted first. The client prints this in red, and for the
+  // "one of these" case it is the only thing on the panel explaining why a
+  // trait cannot be taken - Wind Lore needs The Keeper of Animals or The
+  // Ancient Master, and nothing else says so.
+  if (t.requires && t.requires.length) {
+    var must = el("div", "tipmust");
+    t.requires.forEach(function (group) {
+      must.appendChild(el("div", "ml", group.length > 1
+        ? "You must slot at least one of these traits:"
+        : "You must slot this trait:"));
+      group.forEach(function (g) {
+        var row = el("div", "mi");
+        var rec = D && D.traits ? D.traits[String(g.id)] : null;
+        row.appendChild(document.createTextNode("- "));
+        var a = el("a", null, rec ? rec.name : "#" + g.id);
+        a.href = urlFor("trait/" + g.id);
+        row.appendChild(a);
+        if (g.rank) row.appendChild(document.createTextNode(" at rank " + g.rank));
+        must.appendChild(row);
+      });
+    });
+    box.appendChild(must);
+  }
+
+  if (t.minLevel > 1) {
     box.appendChild(el("div", "tipreq", "Requires level " + t.minLevel));
   }
   return box;
@@ -2871,7 +3095,7 @@ var PIP_WORDS = { Balance: "Attunes", Fervour: "Fervour", Focus: "Focus" };
 /* Each effect the skill puts up gets its own block, the way the game shows it:
    the effect's own wording, then one line per property it changes, named and
    formatted the way PropertyMetaData says, then the duration. */
-function effectBlocks(s, level) {
+function effectBlocks(s, progs, level) {
   var out = [];
   var refs = [];
   (s.attacks || []).forEach(function (a) {
@@ -2886,7 +3110,9 @@ function effectBlocks(s, level) {
     // no application chance of its own: it never lands unless something
     // grants the chance, so it is listed below the panel instead
     if (e.probability === 0) return;
-    var blk = el("div", "tipeff");
+    // What it does to a target it harms reads red; what it gives you reads
+    // pale. Everything was green, so a slow looked like a buff.
+    var blk = el("div", "tipeff" + (e.harmful ? " harm" : ""));
     var head = el("a", "tipeffname", e.name);
     head.href = urlFor("effect/" + e.id);
     blk.appendChild(head);
@@ -2896,7 +3122,7 @@ function effectBlocks(s, level) {
       blk.appendChild(d);
     }
     (e.stats || []).forEach(function (st) {
-      var line = statLine(st);
+      var line = statLine(resolveStat(st, progs, level), "level");
       if (line) blk.appendChild(line);
     });
     var dur = ref.duration !== undefined ? ref.duration : e.duration;
@@ -2941,8 +3167,13 @@ function statAmount(st, meta, signed) {
     n = v;
   }
   if (st.op === "Subtract") n = -Math.abs(n);
-  var out = fmt(signed ? n : Math.abs(n), 1).replace(/\.0$/, "");
-  if (signed && n > 0) out = "+" + out;
+  var shown = signed ? n : Math.abs(n);
+  // "+1,200 Fate", the way the client writes it - a bare 1200 reads as a
+  // different order of magnitude at a glance
+  var out = (!suffix && Math.abs(shown) >= 1000 && Number.isInteger(shown))
+    ? shown.toLocaleString()
+    : fmt(shown, 1).replace(/\.0$/, "");
+  if (signed && shown > 0) out = "+" + out;
   return out + suffix;
 }
 
@@ -2950,9 +3181,31 @@ function statAmount(st, meta, signed) {
    "Slows movement speed by 30%". Its "*" is the placeholder the value goes
    into; a sign or "x" already in front of it means the value goes in
    unsigned. */
+/* Thirteen mounted-combat trait descriptions use a selector markup nothing
+   else in the data does:
+
+     "#1: * : The following skills will bleed: #1:{None|Keen Strike...[G]|...}"
+
+   "#1:" names a branch and the braces hold one option per class, tagged with a
+   letter. Nothing here knows which branch a reader is, and inventing a mapping
+   from those letters would be a guess - so the scaffolding is stripped and the
+   options are listed. Left alone, the raw "#1:{None|...}" was being printed. */
+function expandSelector(d) {
+  if (d.indexOf("#") === -1) return d;
+  d = d.replace(/#\d+:\s*\*\s*:\s*/g, "");
+  d = d.replace(/#\d+:\{([^}]*)\}/g, function (_, body) {
+    var opts = body.split("|").map(function (o) { return o.trim(); })
+      .filter(function (o) { return o && o !== "None"; });
+    if (!opts.length) return "";
+    return "\\n" + opts.map(function (o) { return "\u2022 " + o; }).join("\\n");
+  });
+  return d.replace(/[ \t]{2,}/g, " ").trim();
+}
+
 function statWording(st, meta) {
   var d = st.description;
   if (!d) return null;
+  d = expandSelector(d);
   if (d.indexOf("*") === -1) return d;
   if (st.value === undefined || st.value === null) return null;
   d = d.replace(/([-+x])[ \t]*\*/g, function (_, sign) {
@@ -2987,7 +3240,15 @@ function statLine(st, xLabel) {
     // the value is nil until something grants it - the game still lists it
     return el("div", "tipstat cond", (said || name) + "  (when traited)");
   }
-  if (v === 0) return null;
+  if (v === 0) {
+    // A zero is often just a carrier for the wording. Muscle Memory's entire
+    // effect is a Mod_DescriptionOverride hung on a 0 to Stat_Will - "Using
+    // skills from Battle Memory will restore a small amount of Power" - and
+    // dropping the line for having no number threw away the only content it
+    // had. 135 modifier lines on traits, 2,112 on effects and 716 on item
+    // sets were being lost this way.
+    return said ? multiLine("tipstat", said) : null;
+  }
   if (said) return multiLine("tipstat", said);
   return el("div", "tipstat", statAmount(st, meta, true) + " " + name);
 }
@@ -3462,13 +3723,18 @@ function stackLink(name) {
     // particular, so there is nothing to link to
     return el("span", "muted", name);
   }
-  var a = el("a", null, spaceWords(name));
+  // One link, count included. The count used to be a separate span that
+  // butted straight up against the name with no gap - "MN Com Bossfight 752
+  // others" - and, not being part of the anchor, looked clickable without
+  // being so. It goes to the same page either way now.
+  var a = el("a", "stacklink");
   a.href = stackUrl(name);
-  var box = el("span");
-  box.appendChild(a);
-  box.appendChild(el("span", "via",
-    (group.length - 1) + " other" + (group.length === 2 ? "" : "s")));
-  return box;
+  a.appendChild(document.createTextNode(spaceWords(name)));
+  var rest = group.length - 1;
+  // a real space, not a CSS gap - this text gets read and copied
+  a.appendChild(el("span", "stackcount",
+    " (" + rest + " other" + (rest === 1 ? "" : "s") + ")"));
+  return a;
 }
 
 /* Everything sharing one equivalence class - which is to say, everything that
@@ -3833,7 +4099,8 @@ function route() {
   detail.appendChild(el("div", "muted", "loading..."));
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
               effectTraceries(), sourceClasses(), gambitData(), propertyData(),
-              displayTypeData(), itemSetData(), stackingData()];
+              displayTypeData(), itemSetData(), stackingData(),
+              skillChannelData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
@@ -3841,6 +4108,7 @@ function route() {
     DISPLAY_TYPES = res[8] || {};
     SETS = res[9] || {};
     STACKING = res[10] || {};
+    CHANNELS = res[11] || {};
     var rec = res[0];
     if (!rec) {
       detail.textContent = "";

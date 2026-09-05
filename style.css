@@ -272,22 +272,34 @@ a.ess { color: #86b06b; }
    pip and cooldown greens DO match what the game draws, so those are taken
    from the layout verbatim; the rest follow the client. */
 :root {
-  --tip-bg: #08090b;
-  --tip-border: #55524a;
-  --tip-name: #f2ead6;
-  --tip-stat: #d6d0c2;        /* layout says #666666; the client draws it pale */
-  --tip-desc: #d6d0c2;        /* layout says #7FCCCC; likewise */
-  --tip-damage: #e8e2d2;      /* Skill_Damage_Base is recoloured per damage type */
-  --tip-cost: #00e500;        /* Skill_VitalCost_Base, gambit rows - matches */
-  --tip-pip: #00e500;         /* Skill_Pip_Base - layout #1FE8C3, client green */
-  --tip-time: #23a723;        /* Skill_RecoveryTime_Base #009900, lifted to read */
-  --tip-trait: #c1c1c1;       /* Skill_Trait_Base */
+  /* The panel is not black: it is a dark navy that lifts down the box, which
+     is what makes a #666666 header legible in game. Sampled top to bottom. */
+  --tip-bg: #080C13;
+  --tip-bg-mid: #0E1522;
+  --tip-bg-low: #162137;
+  --tip-border: #959595;
+  --tip-name: #C3B585;        /* the title */
+  --tip-stat: #666666;        /* range, skill type, the header block */
+  --tip-desc: #CCCC7F;        /* the flavour text */
+  --tip-damage: #C31C1F;      /* "16,492 - 20,615 Frost Damage" */
+  --tip-cost: #00E500;        /* "Cost: 135 Power", "Toggle Skill" */
+  --tip-pip: #00E500;
+  --tip-time: #009900;        /* "Duration:", "Cooldown:" */
+  --tip-trait: #c1c1c1;
   --tip-resist: #1fb5c3;      /* Effect_ResistanceCategory_Base */
-  --tip-mods: #00e500;
+  --tip-mods: #CCCC7F;        /* what a BENEFICIAL effect changes */
+  --tip-mods-harm: #FF0000;   /* what a HARMFUL one does to its target */
 }
 
+/* Sampled off in-game screenshots (Wizard's Frost, Forced March) rather than
+   read off the UI layout resource - the layout's stored colours are shipped
+   defaults the live client does not all use. */
+.tip.harm .tipstat, .tipeff.harm .tipstat { color: var(--tip-mods-harm); }
+
 .tip {
-  max-width: 340px; background: var(--tip-bg);
+  max-width: 340px;
+  background: linear-gradient(180deg, var(--tip-bg) 0%,
+              var(--tip-bg-mid) 45%, var(--tip-bg-low) 100%);
   border: 1px solid var(--tip-border); border-radius: 3px;
   padding: 7px 9px 9px;
   font-family: var(--sans); line-height: 1.45;
@@ -394,23 +406,38 @@ a.ess { color: #86b06b; }
 /* ---------- the trait tree, as a tree ---------- */
 /* Cells carry their row and column; the page used to print them as a list,
    which threw away the one thing a trait tree actually is. */
+:root { --tcell: 108px; }
 .ttree {
-  display: grid; gap: 6px; margin: 6px 0 2px; max-width: 560px;
-  align-items: stretch;
+  display: grid; gap: 8px; margin: 8px 0 4px;
+  /* stay at the left edge rather than stretching across the panel */
+  justify-content: start; align-items: stretch;
 }
 a.tcell {
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  padding: 7px 5px; text-align: center; text-decoration: none;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 6px; text-align: center; text-decoration: none;
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); color: var(--ink-2); min-width: 0;
+  border-radius: var(--radius); color: var(--ink-2);
+  min-width: 0; min-height: 94px; justify-content: flex-start;
 }
 a.tcell:hover {
   border-color: var(--accent-dim); background: var(--surface-2);
   color: var(--ink); text-decoration: none;
 }
-a.tcell img { width: 30px; height: 30px; border-radius: 4px; background: var(--surface-3); }
-a.tcell .tn { font-size: 11px; line-height: 1.25; }
-a.tcell .tg { font: 10px var(--mono); color: var(--accent-dim); }
+a.tcell img { width: 32px; height: 32px; border-radius: 4px; background: var(--surface-3); flex: none; }
+a.tcell .tn {
+  font-size: 11px; line-height: 1.25;
+  /* "Shocking Counterattack" has to break inside a word rather than spill
+     out over the cell beside it */
+  overflow-wrap: anywhere; hyphens: auto;
+}
+a.tcell .tg { font: 10px var(--mono); color: var(--accent-dim); margin-top: auto; }
+
+@media (max-width: 720px) {
+  :root { --tcell: 88px; }
+  .ttree { gap: 6px; }
+  a.tcell { min-height: 84px; padding: 6px 4px; }
+  a.tcell img { width: 28px; height: 28px; }
+}
 
 /* ---------- property pages ---------- */
 /* code.pn is now a link to the property's own page. */
@@ -418,3 +445,58 @@ a.pn { font: 11.5px var(--mono); color: var(--info); }
 a.pn:hover { color: var(--accent); }
 .plabel { font-size: 12.5px; color: var(--ink); margin-bottom: 1px; }
 .proprun { line-height: 1.9; max-width: 80ch; }
+
+/* ---------- the trait panel ---------- */
+/* Laid out like the client's: class and rank ladder on one line, the
+   description once, then every earnable rank in turn. The client paints the
+   rank you have in pale text and the ranks ahead of you in green; with no
+   character to read, rank 1 takes the pale role. */
+/* Sampled straight off in-game screenshots rather than guessed - the client's
+   trait panel uses its own palette, and none of it matches the skill one. */
+:root {
+  --tt-flavour: #C3B51F;   /* the description line */
+  --tt-class:   #2AB51F;   /* "Warden", "Beorning" */
+  --tt-rank:    #009900;   /* the "Rank: 2" labels */
+  --tt-value:   #99FF00;   /* every rank's modifiers, first one included */
+  --tt-earned:  #FF00FF;   /* "Skills Earned:" and the skills under it */
+  --tt-name:    #C3B585;   /* the title, and the state line */
+}
+.tip.trait { max-width: 300px; }
+.tip.trait .tipname { color: var(--tt-name); }
+.tip.trait .tipdesc { color: var(--tt-flavour); }
+.tip.trait .tiprank .rl { color: var(--tt-rank); }
+.tip.trait .tipstat { color: var(--tt-value); }
+.tipearned { margin-top: 6px; font-size: 12px; color: var(--tt-earned); }
+.tipearned a { color: var(--tt-earned); }
+.tipearned a:hover { color: #FF7BFF; }
+.tipwho {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12px; margin-top: 4px;
+}
+.tipwho .tipclass { color: var(--tt-class); }
+.tipwho .tiprankmax { color: var(--tip-stat); }
+.tiprank { border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px; }
+.tiprank .rl { font-size: 12px; color: var(--tip-name); margin-bottom: 1px; }
+.tipcost { font-size: 12px; color: var(--tip-resist); margin-top: 6px; }
+
+/* the skills a specialisation hands you, under the branch heading */
+.specskills { font-size: 12px; margin: 2px 0 6px; }
+.specskills .sk { color: var(--tt-earned); margin-right: 6px; }
+
+/* "You must slot at least one of these traits" - the client paints it pure
+   red, and it is the only thing that explains why a trait cannot be taken. */
+:root { --tt-require: #FF0000; }
+.tipmust {
+  border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px;
+  font-size: 12px; color: var(--tt-require);
+}
+.tipmust a { color: var(--tt-require); }
+.tipmust a:hover { color: #FF7070; }
+.tipmust .mi { padding-left: 8px; }
+
+/* "Does not stack with": the group name and how many others are in it, as one
+   link. The count is dimmer but inside the anchor, so all of it is clickable. */
+a.stacklink .stackcount { color: var(--ink-3); font-size: 11.5px; }
+a.stacklink:hover .stackcount { color: var(--accent); }
+/* a stat cell's trailing note needs the same breathing room a table row gives it */
+.stat .v .via { margin-left: 8px; }
