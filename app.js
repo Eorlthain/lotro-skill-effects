@@ -153,12 +153,25 @@ function preloadTipEffects(s) {
         ids[typeof e === "number" ? e : e.id] = 1;
       });
     });
-  var want = Object.keys(ids).filter(function (id) { return !EFFECT_CACHE[id]; });
-  return Promise.all(want.map(function (id) {
-    return loadRecord("effect", parseInt(id, 10)).then(function (rec) {
-      if (rec) EFFECT_CACHE[String(rec.id)] = rec;
+  function fetchAll(list) {
+    var want = list.filter(function (id) { return !EFFECT_CACHE[id]; });
+    return Promise.all(want.map(function (id) {
+      return loadRecord("effect", parseInt(id, 10)).then(function (rec) {
+        if (rec) EFFECT_CACHE[String(rec.id)] = rec;
+      });
+    }));
+  }
+  // A carrier's payload is what the panel actually prints, so it has to be in
+  // hand too - one level down, which is as deep as the client goes.
+  return fetchAll(Object.keys(ids)).then(function () {
+    var deeper = {};
+    Object.keys(ids).forEach(function (id) {
+      var e = EFFECT_CACHE[id];
+      if (!e || !carrierLines(e)) return;
+      (e.nested || []).forEach(function (n) { deeper[n.id] = 1; });
     });
-  }));
+    return fetchAll(Object.keys(deeper));
+  });
 }
 
 /* A trait's rank block quotes the effects it applies - "On every Swordplay
@@ -355,14 +368,22 @@ function richText(str) {
   str = String(str).replace(/<li>\s*/gi, "\u2022 ").replace(/<\/li>/gi, "\\n");
   // The DAT pads class descriptions with runs of blank lines; keep at most one.
   str = str.replace(/(?:\\n\s*){3,}/g, "\\n\\n").replace(/^(?:\\n)+/, "");
-  var re = /<rgb=#([0-9a-fA-F]{6})>([\s\S]*?)<\/rgb>/gi;
+  // 39 strings open a colour and never close it - Sacrifice's whole wording is
+  // "<rgb=#00FFDD>If you fall below 1% morale..." with no </rgb>. Requiring
+  // the pair printed the opening tag as text, so the close is optional and an
+  // unclosed colour simply runs to the end.
+  // 37 tags in the data are malformed - "<rgb=#66fff>", five digits - so the
+  // digit count is not the thing that decides whether this is markup. Anything
+  // that is not a real hex colour keeps its text and drops the colour.
+  var re = /<rgb=#([0-9a-fA-F]{1,8})>([\s\S]*?)(?:<\/rgb>|$)/gi;
   var at = 0, m;
   function plain(t, colour) {
-    var parts = t.split(/\\n|\n/);
+    // a stray close with no open is scaffolding, not content
+    var parts = String(t).replace(/<\/rgb>/gi, "").split(/\\n|\n/);
     parts.forEach(function (bit, i) {
       if (i) frag.appendChild(document.createElement("br"));
       if (!bit) return;
-      if (colour) {
+      if (colour && /^([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(colour)) {
         var sp = el("span", null, bit);
         sp.style.color = "#" + colour;
         frag.appendChild(sp);
@@ -2884,12 +2905,24 @@ function tooltipPanel(s, progs, D, level) {
   }
   top.appendChild(row0);
   // Skill_AnimationMode is the ANIMATION, not the combat category: Wizard's
-  // Frost animates as "Melee" while the client calls it a Tactical Skill. A
-  // hook that draws on tactical damage is what makes it tactical - 156 skills
-  // were labelled by the wrong one.
-  var mode = (s.attacks || []).some(function (a) { return a.usesTactical; })
-    ? "Tactical" : s.animationMode;
-  if (mode) tipLine(top, null, titleCase(mode) + " Skill");
+  // Frost animates as "Melee" while the client calls it a Tactical Skill. The
+  // category is Skill_AttackHook_DamageQualifier, whose "Magic" is what the
+  // client writes as Tactical. Skill_AttackHook_UsesTactical is a different
+  // question - which mastery the damage draws on - and keying off it labelled
+  // 5,506 skills wrongly, Dissonant Strike and Healer's Strike among them.
+  // Only 11 skills carry hooks that disagree with each other, so the first
+  // qualifier is the skill's category; with no attack hook at all there is
+  // nothing but the animation to go on.
+  var qual = null;
+  (s.attacks || []).forEach(function (a) {
+    if (!qual && a.damageQualifier) qual = a.damageQualifier;
+  });
+  // With no attack hook there is no category: Story of Courage is a buff, and
+  // the client prints no "... Skill" line for it at all. Falling back to the
+  // animation put "Ranged Skill" on 2,944 skills that have no combat category.
+  if (qual) {
+    tipLine(top, null, titleCase(qual === "Magic" ? "Tactical" : qual) + " Skill");
+  }
   if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
   if (s.aeSphereRadius !== undefined) {
     tipLine(top, "Radius:", fmt(s.aeSphereRadius) + "m");
@@ -2965,9 +2998,9 @@ function tooltipPanel(s, progs, D, level) {
   // Skill. The channeling state is the marker, not the toggle effect list -
   // two of the 171 channels carry no toggle effects of their own.
   if (s.channel) {
-    tipLine(foot, null, "Channel Skill");
+    tipLine(foot, null, "Channel Skill", "time");
   } else if (s.toggleEffects && s.toggleEffects.length) {
-    tipLine(foot, null, "Toggle Skill");
+    tipLine(foot, null, "Toggle Skill", "time");
   }
   if (s.gambitAdds) {
     var ga = gambitRow(s.gambitAdds, "Builds");
@@ -2989,7 +3022,7 @@ function tooltipPanel(s, progs, D, level) {
     tipLine(foot, null, "Clears All Gambits");
   }
   if (s.cooldown !== undefined) {
-    tipLine(foot, "Cooldown:", secs(s.cooldown), "time");
+    tipLine(foot, "Cooldown:", secs(s.cooldown), "time cdgap");
   }
   if (foot.children.length) box.appendChild(foot);
 
@@ -3031,7 +3064,10 @@ function effectTooltip(e, progs, D, level) {
   // the page no longer repeats these above, so the panel carries both the
   // definition wording and the on-application line when they differ
   var said = {};
-  [e.desc, e.descOverride, e.applied].forEach(function (w) {
+  // fellowshipHeader is deliberately NOT here: it ends in a colon and
+  // introduces the nested effect, so on the carrier's own page it would dangle.
+  // "What it does" below already words the whole relationship.
+  [dispelWording(e, level), e.desc, e.descOverride, e.applied].forEach(function (w) {
     if (!w || said[w]) return;
     said[w] = 1;
     var d = el("div", "tipdesc");
@@ -3358,6 +3394,131 @@ var PIP_WORDS = { Balance: "Attunes", Fervour: "Fervour", Focus: "Focus" };
 /* Each effect the skill puts up gets its own block, the way the game shows it:
    the effect's own wording, then one line per property it changes, named and
    formatted the way PropertyMetaData says, then the duration. */
+/* A dispel-by-resist effect has no modifiers, no duration and no wording of
+   its own - the whole of it is the sentence the client writes in red:
+   "Removes up to 1 Corruption effect from the target." Cry of the Valar and
+   the other corruption removals carried it as a bare name with nothing under
+   it, so the panel never said what the skill actually does. */
+function dispelWording(e, level) {
+  if (!e.dispelCategories || !e.dispelCategories.length) return null;
+  var n = e.dispelMax || 1;
+  var out = "Removes up to " + n + " " +
+    e.dispelCategories.map(titleCase).join(", ") +
+    " effect" + (n === 1 ? "" : "s");
+  // Effect_DispelByResist_StrengthRestrictionOffset is added to the caster's
+  // LEVEL, so this number moves with the level box: at 160 the client writes
+  // "with maximum strength of 165".
+  if (e.dispelStrengthOffset !== undefined) {
+    out += " with maximum strength of " +
+      ((level === undefined ? LEVEL_CAP : level) + e.dispelStrengthOffset);
+  }
+  return out + " from the target.";
+}
+
+/* A carrier applies nothing itself - it hands its nested effects on to
+   somebody. The client never shows the carrier as an effect: it writes what
+   the carrier decides, then a line naming who is about to receive something,
+   then what the nested effect actually does. Two kinds:
+
+     Effects applied to the Fellowship within 15 metres:   (Story of Courage)
+     +21,600 Fear Resist Rating
+
+     Target revives with 50% Morale                        (Enlivening Grace)
+     Target revives with 0% Power
+     Effects to apply on revival:
+     You have been recently revived.
+     Duration: 30s
+
+   Without this the panel ended at the carrier's name with nothing under it. */
+/* The client writes anything that restores you in the same bright green as
+   the cost line - heals, heals over time, and revives alike. Everything else
+   a skill puts up is pale; what it does to an enemy is red. */
+function isHeal(e) {
+  if (!e || e.harmful) return false;
+  if (e.reviveVitals && e.reviveVitals.length) return true;
+  return !!(e.vital && (e.vitalType === undefined || e.vitalType === "Health"));
+}
+
+function carrierLines(e) {
+  if (e.fellowshipRange !== undefined) {
+    return { pre: [], header: "Effects applied to " +
+      (e.fellowshipWho || "the Fellowship") +
+      " within " + fmt(e.fellowshipRange) + " metres:" };
+  }
+  if (e.reviveVitals && e.reviveVitals.length) {
+    return {
+      pre: e.reviveVitals.map(function (v) {
+        return "Target revives with " + fmt(v.percent * 100, 3) + "% " +
+               vitalName(v.type);
+      }),
+      header: "Effects to apply on revival:"
+    };
+  }
+  return null;
+}
+
+/* What one effect contributes to a panel block: its own sentence, then a line
+   per property it changes, then how long it lasts. Returns how many lines it
+   put up, so a caller can drop a block that turned out to say nothing. */
+function effectBody(blk, e, ref, progs, level, noName) {
+  var before = blk.children.length;
+  var dispel = dispelWording(e, level);
+  if (dispel) {
+    // A dispel is written as its sentence, not as a named effect box - that is
+    // how the client draws it, and there is nothing else to put in the box.
+    // Red when it strips a buff off an enemy (Cry of the Valar), the heal
+    // green when it cures an ally (Story of Courage) - the effect's own
+    // harmful flag decides, and hard-coding red got the cures wrong.
+    var dl = el("a", "tipstat dispel" + (e.harmful ? "" : " heal"), dispel);
+    dl.href = urlFor("effect/" + e.id);
+    blk.appendChild(dl);
+    return blk.children.length - before;
+  }
+  var named = false;
+  if (!noName && !blk.children.length) {
+    var head = el("a", "tipeffname", e.name);
+    head.href = urlFor("effect/" + e.id);
+    blk.appendChild(head);
+    named = true;
+  }
+  if (e.applied || e.descOverride) {
+    var d = el("div", "tipeffdesc");
+    d.appendChild(richText(e.applied || e.descOverride));
+    blk.appendChild(d);
+  }
+  // What it does to your morale or power. Only the effect's OWN panel used to
+  // print this, so a heal skill's tooltip - Chord of Salvation, Raise the
+  // Spirit - never said how much it heals, and the block was dropped for
+  // having nothing in it.
+  var v = e.vital;
+  if (v) {
+    var init = v.initial !== undefined ? v.initial
+             : progAt(progs, v.initialProgression, level);
+    var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
+                        e.pulseCount ? " on application" : "");
+    if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); blk.appendChild(vl); }
+    if (e.pulseCount) {
+      var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
+                          v.vpsPerPulse, v.perPulseVariance,
+                          " every " + fmt(e.interval || e.duration) + "s, " +
+                          e.pulseCount + " times");
+      if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); blk.appendChild(vr); }
+    }
+  }
+  (e.stats || []).forEach(function (st) {
+    var line = statLine(resolveStat(st, progs, level), "level");
+    if (line) blk.appendChild(line);
+  });
+  var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
+  if (dur !== undefined && dur > 0) {
+    blk.appendChild(el("div", "tipdur", "Duration: " + secs(dur)));
+  } else if (e.permanent) {
+    blk.appendChild(el("div", "tipdur", "Duration: permanent"));
+  }
+  // A block that is only the effect's own name says nothing at all.
+  return blk.children.length - before - (named ? 1 : 0);
+}
+
 function effectBlocks(s, progs, level) {
   var out = [];
   var refs = [];
@@ -3375,26 +3536,31 @@ function effectBlocks(s, progs, level) {
     if (e.probability === 0) return;
     // What it does to a target it harms reads red; what it gives you reads
     // pale. Everything was green, so a slow looked like a buff.
-    var blk = el("div", "tipeff" + (e.harmful ? " harm" : ""));
-    var head = el("a", "tipeffname", e.name);
-    head.href = urlFor("effect/" + e.id);
-    blk.appendChild(head);
-    if (e.applied || e.descOverride) {
-      var d = el("div", "tipeffdesc");
-      d.appendChild(richText(e.applied || e.descOverride));
-      blk.appendChild(d);
+    var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
+                       (isHeal(e) ? " heal" : ""));
+    var carrier = carrierLines(e);
+    if (carrier) {
+      carrier.pre.forEach(function (t) {
+        blk.appendChild(el("div", "tipstat", t));
+      });
+      // Build the payload first: with nothing in it the header would announce
+      // effects that never arrive.
+      var host = el("div");
+      (e.nested || []).forEach(function (n) {
+        var ne = EFFECT_CACHE[String(n.id)];
+        if (!ne) return;
+        // A carrier is only a wrapper, so what it hands on decides the colour.
+        if (isHeal(ne)) blk.className += " heal";
+        effectBody(host, ne, null, progs, level, true);
+      });
+      if (host.children.length) {
+        blk.appendChild(el("div", "tipeffwho", carrier.header));
+        while (host.firstChild) blk.appendChild(host.firstChild);
+      }
+      if (blk.children.length) out.push(blk);
+      return;
     }
-    (e.stats || []).forEach(function (st) {
-      var line = statLine(resolveStat(st, progs, level), "level");
-      if (line) blk.appendChild(line);
-    });
-    var dur = ref.duration !== undefined ? ref.duration : e.duration;
-    if (dur !== undefined && dur > 0) {
-      blk.appendChild(el("div", "tipdur", "Duration: " + secs(dur)));
-    } else if (e.permanent) {
-      blk.appendChild(el("div", "tipdur", "Duration: permanent"));
-    }
-    if (blk.children.length > 1) out.push(blk);
+    if (effectBody(blk, e, ref, progs, level)) out.push(blk);
   });
   // the panel quotes at most six, the way the client's box is bounded - but
   // saying so beats letting the rest disappear without a word
@@ -3472,7 +3638,12 @@ function statWording(st, meta) {
   if (d.indexOf("*") === -1) return d;
   if (st.value === undefined || st.value === null) return null;
   d = d.replace(/([-+x])[ \t]*\*/g, function (_, sign) {
-    return sign + statAmount(st, meta, false);
+    var amt = statAmount(st, meta, false);
+    // A plain multiplier is written "x0.8" by statAmount, and 508 wordings
+    // already put the x in front of their own placeholder - "x * Outgoing
+    // Damage". Pasting both gave "xx0.8".
+    if (sign === "x" && amt.charAt(0) === "x") return amt;
+    return sign + amt;
   });
   d = d.replace(/\*/g, statAmount(st, meta, true));
   return d.replace(/[ \t]{2,}/g, " ");
@@ -3523,14 +3694,25 @@ function statLine(st, xLabel) {
   return el("div", "tipstat", statAmount(st, meta, true) + " " + name);
 }
 
-/* Some wordings carry their own line breaks, written as a literal \n. */
+/* Some wordings carry their own line breaks, written as a literal \n - and
+   some carry the client's colour markup too. Dissonance's Ballad Damage
+   modifier is worded "+ * Ballad Damage \n\n<rgb=#FF7700> All Heals become
+   Self-only</rgb>", and writing it as a plain text node printed the tags. */
 function multiLine(cls, str) {
+  // Split first and the markup breaks: Adamant's wording is
+  // "<rgb=#00FFDD>Each Fervour consumed increases potency by 4%.\n</rgb>",
+  // and cutting on the newline leaves an unclosed tag on one line and a bare
+  // closing tag on the next, neither of which richText can pair up. So the
+  // blank runs are collapsed to single breaks and the whole string, tags
+  // intact, goes through richText - which turns the breaks into <br> itself.
+  var text = String(str)
+    .replace(/(?:\\n|\n)[ \t]*(?:(?:\\n|\n)[ \t]*)*/g, "\\n")
+    .replace(/^(?:\\n)+/, "")
+    .replace(/(?:\\n)+$/, "")
+    .trim();
+  if (!text) return null;
   var host = el("div", cls);
-  String(str).split(/\\n|\n/).forEach(function (part) {
-    if (!part.trim()) return;
-    if (host.childNodes.length) host.appendChild(el("br"));
-    host.appendChild(document.createTextNode(part.trim()));
-  });
+  host.appendChild(richText(text));
   return host.childNodes.length ? host : null;
 }
 

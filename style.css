@@ -210,6 +210,11 @@ table.t img.inline {
   margin-right: 7px; background: var(--surface-2);
 }
 
+/* "Effects applied to the Fellowship within 15 metres:" - the audience line
+   above a carried effect, dimmer than what it introduces. */
+.tip .tipeffwho { font-size: 11.5px; color: var(--tip-time); }
+.tip .tipeff .dispel { text-decoration: none; display: block; }
+.tip .tipeff .tipstat.heal { color: var(--tip-cost); }
 a.eff { color: var(--info); }
 /* Distinct records that share a display name - six effects are called
    "Healing" - carry their id so a run of them is not one name repeated. */
@@ -290,14 +295,27 @@ a.ess { color: #86b06b; }
   --tip-time: #009900;        /* "Duration:", "Cooldown:" */
   --tip-trait: #c1c1c1;
   --tip-resist: #1fb5c3;      /* Effect_ResistanceCategory_Base */
-  --tip-mods: #CCCC7F;        /* what a BENEFICIAL effect changes */
+  --tip-mods: #00E500;        /* what a BENEFICIAL effect changes */
   --tip-mods-harm: #FF0000;   /* what a HARMFUL one does to its target */
+  --prose-amt: #CCCC7F;       /* a number in the page's own prose, not a tip */
 }
 
 /* Sampled off in-game screenshots (Wizard's Frost, Forced March) rather than
    read off the UI layout resource - the layout's stored colours are shipped
    defaults the live client does not all use. */
-.tip.harm .tipstat, .tipeff.harm .tipstat { color: var(--tip-mods-harm); }
+/* A beneficial effect's content is one colour and a harmful one's is another,
+   whichever line it arrives on - the effect's own wording as much as the
+   modifier lines under it. */
+.tip.harm .tipstat, .tipeff.harm .tipstat,
+.tip.harm .tipeffdesc, .tipeff.harm .tipeffdesc { color: var(--tip-mods-harm); }
+.tipeff .tipeffdesc { color: var(--tip-mods); }
+/* Anything that restores you reads in the cost green. That is the same value
+   as --tip-mods, because ALL beneficial effect content is #00E500 - the rule
+   is kept separate only so a restoring effect stays green if the two ever
+   part company. The audience line and the duration keep their dimmer green. */
+.tipeff.heal .tipstat, .tipeff.heal .tipeffdesc, .tipeff.heal .tl {
+  color: var(--tip-cost);
+}
 
 .tip {
   max-width: 340px;
@@ -328,9 +346,18 @@ a.ess { color: #86b06b; }
 .tip .tl.tiprow0 .tipright { text-align: right; }
 .tip .tk { color: var(--tip-stat); margin-right: 4px; }
 .tip .tv { color: var(--tip-stat); }
-.tip .tipbody.cost .tl, .tip .tipbody.cost .tv { color: var(--tip-cost); }
-.tip .tipbody.cost .tl.pip, .tip .tipbody.cost .tl.pip .tv { color: var(--tip-pip); }
-.tip .tipbody.cost .tl.time, .tip .tipbody.cost .tl.time .tv { color: var(--tip-time); }
+/* "Cost:" is part of the cost, not a grey label beside it - the client writes
+   the whole line in the one colour. */
+.tip .tipbody.cost .tl, .tip .tipbody.cost .tv,
+.tip .tipbody.cost .tk { color: var(--tip-cost); }
+/* The cooldown always ends the panel, with one clear row above it. */
+.tip .tl.cdgap { margin-top: 1.45em; }
+.tip .tipbody.cost .tl.pip, .tip .tipbody.cost .tl.pip .tv,
+.tip .tipbody.cost .tl.pip .tk { color: var(--tip-pip); }
+/* These have to restate the label too, or the cost rule above - equal
+   specificity, later in the file - repaints "Cooldown:" as a cost. */
+.tip .tipbody.cost .tl.time, .tip .tipbody.cost .tl.time .tv,
+.tip .tipbody.cost .tl.time .tk { color: var(--tip-time); }
 .tip .tipbody.dmg .tl, .tip .tipbody.dmg .tv { color: var(--tip-damage); }
 .tip code.dmg {
   font: 12px var(--mono); color: var(--tip-damage);
@@ -365,7 +392,7 @@ a.ess { color: #86b06b; }
 
 /* the generated effect description - prose, with its references as links */
 .does { line-height: 1.6; max-width: 74ch; }
-.does .amt { color: var(--tip-mods); font-variant-numeric: tabular-nums; }
+.does .amt { color: var(--prose-amt); font-variant-numeric: tabular-nums; }
 .does .scaled { color: var(--ink-3); font-style: italic; }
 .does .summon { color: var(--tip-name); }
 
