@@ -18,6 +18,7 @@ var BASE = (function () {
 function urlFor(route) { return BASE + String(route).replace(/^\/+/, ""); }
 function dataUrl(file) { return BASE + file; }
 function propUrl(name) { return urlFor("property/" + encodeURIComponent(name)); }
+function stackUrl(name) { return urlFor("stacking/" + encodeURIComponent(name)); }
 
 /* A static host has no rewrite rule, so a deep link like /skill/123 is served
    by 404.html, which bounces it back here as "/?/skill/123". Put the real path
@@ -116,6 +117,8 @@ function sideFile(name) {
 function modSources() { return sideFile("modSources"); }
 function gambitData() { return sideFile("gambits"); }
 function itemSetData() { return sideFile("itemsets"); }
+function stackingData() { return sideFile("stacking"); }
+var STACKING = null;
 var SETS = null;
 function propertyData() { return sideFile("properties"); }
 function displayTypeData() { return sideFile("displayTypes"); }
@@ -1408,8 +1411,10 @@ function renderEffect(e, progs, MS, D, ET) {
       ? fmt(e.probability * 100, 1) + "%" : null],
     ["Chance granted by", chanceSource(e), "wide"],
     ["Resist", e.resistCategory],
-    // effects sharing an equivalence class do not stack with one another
-    ["Does not stack with", e.equivalence, "wide"]
+    // Effects sharing an equivalence class do not stack with one another.
+    // Naming the class was as far as this went; what a player is asking is
+    // "so what else is in it", which is now one click away.
+    ["Does not stack with", stackLink(e.equivalence), "wide"]
   ]));
 
   section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs, "Level", D, owners));
@@ -1924,14 +1929,44 @@ function renderTrait(t, D, MS, progs) {
   if (t.category) tags.appendChild(el("span", "tag", titleCase(t.category)));
   host.appendChild(tags);
 
-  if (t.desc) host.appendChild(richPara("desc", t.desc));
-  if (t.tooltip && t.tooltip !== t.desc) {
-    var tp = el("p", "muted");
-    tp.appendChild(richText(t.tooltip));
-    host.appendChild(tp);
+  // The wording used to sit here as loose paragraphs; it belongs in the panel,
+  // the way it does on a skill and an effect page.
+  var maxRank = traitMaxRank(t, progs);
+  var rank = Math.min(maxRank, Math.max(1, parseInt(PREFS.traitRank, 10) || 1));
+  var tipWrap = el("div");
+  function drawTraitTip() {
+    tipWrap.textContent = "";
+    tipWrap.appendChild(traitTooltip(t, progs, rank));
+    if (maxRank <= 1 || !traitUsesRank(t, progs)) return;
+    var ctl = el("div", "tipctl");
+    ctl.appendChild(el("span", "muted", "at rank "));
+    var input = el("input");
+    input.type = "number";
+    input.min = "1";
+    input.max = String(maxRank);
+    input.value = String(rank);
+    input.oninput = function () {
+      var v = parseInt(input.value, 10);
+      if (isNaN(v) || v < 1) return;
+      rank = Math.min(v, maxRank);
+      // remembered, because someone reading a trait tree is comparing the
+      // same rank across a dozen traits
+      PREFS.traitRank = rank;
+      savePrefs();
+      drawTraitTip();
+      var i = tipWrap.querySelector("input");
+      if (i) i.focus();
+    };
+    ctl.appendChild(input);
+    ctl.appendChild(el("span", "muted", "of " + maxRank));
+    tipWrap.appendChild(ctl);
   }
+  drawTraitTip();
+  section(host, "Tooltip", tipWrap);
+
   section(host, "At a glance", statRow([
     ["Tier", t.tier],
+    ["Ranks", maxRank > 1 ? maxRank : null],
     ["Minimum level", t.minLevel]
   ]));
   // a trait's Mod_Progression is indexed by the trait's RANK, not by level
@@ -2719,6 +2754,109 @@ function chanceSource(e) {
   return box;
 }
 
+/* A modifier that carries a curve instead of a flat value. statLine can only
+   print what it is given, so fill the value in from the curve at the index the
+   reader has chosen - level for a skill or effect, RANK for a trait. */
+function resolveStat(st, progs, index) {
+  if (st.value !== undefined || !st.progression) return st;
+  var v = progAt(progs, st.progression, index);
+  if (v === null || v === undefined) return st;
+  var copy = {};
+  for (var k in st) copy[k] = st[k];
+  copy.value = v;
+  return copy;
+}
+
+/* How far a trait's ranks actually run: the end of its own curves, and any
+   rank at which it hands over a skill or an effect. */
+function traitMaxRank(t, progs) {
+  var top = 1;
+  (t.stats || []).forEach(function (st) {
+    if (!st.progression) return;
+    var pts = curvePoints(progs && progs[String(st.progression)], 0);
+    if (pts && pts.length) top = Math.max(top, pts[pts.length - 1][0]);
+  });
+  (t.skills || []).concat(t.effects || []).forEach(function (g) {
+    if (g && g.rank) top = Math.max(top, g.rank);
+  });
+  return top;
+}
+
+/* The trait panel, built the way the skill and effect ones are. A trait is the
+   only thing on the site that had no tooltip of its own, so its numbers were
+   only ever readable as a table of raw property names - and the table cannot
+   say what one RANK of it is worth, which is the thing a player is choosing
+   between when they spend a point. */
+function traitTooltip(t, progs, rank) {
+  var box = el("div", "tip");
+
+  var head = el("div", "tiphead");
+  var img = el("img");
+  img.src = iconUrl(t.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var nm = el("div");
+  nm.appendChild(el("div", "tipname", t.name));
+  if (t.tier) nm.appendChild(el("div", "tipsub", "Tier " + t.tier));
+  head.appendChild(nm);
+  box.appendChild(head);
+
+  var said = {};
+  [t.desc, t.tooltip].forEach(function (w) {
+    if (!w || said[w]) return;
+    said[w] = 1;
+    var d = el("div", "tipdesc");
+    d.appendChild(richText(w));
+    box.appendChild(d);
+  });
+
+  var body = el("div", "tipbody");
+  (t.stats || []).forEach(function (st) {
+    var line = statLine(resolveStat(st, progs, rank), "rank");
+    if (line) body.appendChild(line);
+  });
+  if (body.children.length) box.appendChild(body);
+
+  // what this rank hands you, which is the other half of the choice
+  var gains = el("div", "tipbody");
+  [["skills", "skill", "Grants"], ["effects", "effect", "Applies"]]
+    .forEach(function (spec) {
+      var at = (t[spec[0]] || []).filter(function (g) {
+        return (g.rank || 1) <= rank;
+      });
+      if (!at.length) return;
+      var line = el("div", "tl");
+      line.appendChild(el("span", "tk", spec[2] + ":"));
+      var run = el("span", "tv");
+      run.appendChild(linkRun(at.map(function (g) {
+        return function () {
+          var meta = nameOf(g.id);
+          var a = el("a", spec[1] === "effect" ? "eff" : null,
+                     meta ? meta.n : "#" + g.id);
+          a.href = urlFor(spec[1] + "/" + g.id);
+          if (g.rank) a.title = "from rank " + g.rank;
+          return a;
+        };
+      }), 4, 0));
+      line.appendChild(run);
+      gains.appendChild(line);
+    });
+  if (gains.children.length) box.appendChild(gains);
+
+  if (t.minLevel) {
+    box.appendChild(el("div", "tipreq", "Requires level " + t.minLevel));
+  }
+  return box;
+}
+
+/* Only show a rank box when a rank actually changes something. */
+function traitUsesRank(t, progs) {
+  if ((t.stats || []).some(function (st) { return st.progression; })) return true;
+  return (t.skills || []).concat(t.effects || [])
+    .some(function (g) { return g && g.rank > 1; });
+}
+
 /* Only show a level box when something on the panel actually moves with it. */
 function usesLevel(e) {
   var v = e.vital || {};
@@ -3314,6 +3452,52 @@ function buildPrefsUI() {
   host.appendChild(gear);
 }
 
+/* ---------------- stacking groups ---------------- */
+
+function stackLink(name) {
+  if (!name) return null;
+  var group = STACKING && STACKING[name];
+  if (!group || group.length < 2) {
+    // a class with no other member does not stack against anything in
+    // particular, so there is nothing to link to
+    return el("span", "muted", name);
+  }
+  var a = el("a", null, spaceWords(name));
+  a.href = stackUrl(name);
+  var box = el("span");
+  box.appendChild(a);
+  box.appendChild(el("span", "via",
+    (group.length - 1) + " other" + (group.length === 2 ? "" : "s")));
+  return box;
+}
+
+/* Everything sharing one equivalence class - which is to say, everything that
+   overwrites rather than adds to the others. The effect page could name the
+   class but never say what else was in it, because effects are sharded 128
+   ways and finding the rest meant fetching all of them. */
+function renderStacking(name, group) {
+  var host = el("div");
+  var head = el("div", "head");
+  var h = el("div");
+  h.appendChild(el("h2", null, spaceWords(name)));
+  h.appendChild(el("div", "id", "stacking group " + name));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  var tags = el("div", "tags");
+  tags.appendChild(el("span", "tag kind", "Stacking group"));
+  tags.appendChild(el("span", "tag", group.length + " effects"));
+  host.appendChild(tags);
+
+  host.appendChild(el("p", "desc",
+    "These share an equivalence class, so only one of them is ever on a "
+    + "target at a time - applying a second replaces the first rather than "
+    + "adding to it."));
+
+  section(host, "In this group", linkList(group, "effect"));
+  return host;
+}
+
 /* ---------------- property pages ---------------- */
 
 /* modSources.json already indexed all 3,194 properties in every direction -
@@ -3495,6 +3679,28 @@ function route() {
     return;
   }
 
+  var gm = /^stacking\/(.+)$/.exec(path);
+  if (gm) {
+    var gname = gm[1];
+    selected = null;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    stackingData().then(function (G) {
+      STACKING = G || {};
+      detail.textContent = "";
+      var group = STACKING[gname];
+      if (!group) {
+        detail.appendChild(el("div", "empty",
+          "No stacking group called " + gname + "."));
+        return;
+      }
+      detail.appendChild(renderStacking(gname, group));
+      document.title = gname + " - LOTRO Skills and Effects";
+    });
+    runSearch();
+    return;
+  }
+
   var pm = /^property\/(.+)$/.exec(path);
   if (pm) {
     var prop = pm[1];
@@ -3627,13 +3833,14 @@ function route() {
   detail.appendChild(el("div", "muted", "loading..."));
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
               effectTraceries(), sourceClasses(), gambitData(), propertyData(),
-              displayTypeData(), itemSetData()];
+              displayTypeData(), itemSetData(), stackingData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
     PROPS = res[7] || {};
     DISPLAY_TYPES = res[8] || {};
     SETS = res[9] || {};
+    STACKING = res[10] || {};
     var rec = res[0];
     if (!rec) {
       detail.textContent = "";

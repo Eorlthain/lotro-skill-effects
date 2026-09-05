@@ -7,15 +7,18 @@ The site uses real paths (/skill/123) rather than hash routes, so a plain
 no file at that address. GitHub Pages solves that with 404.html; this does the
 same thing locally by serving index.html for any path that is not a real file.
 
-    python serve.py            http://localhost:8000
-    python serve.py 9000       a different port
+    python serve.py               http://localhost:8000, opened in a browser
+    python serve.py 9000          a different port
+    python serve.py --no-browser  do not open one
 """
 
 import http.server
 import os
 import posixpath
 import sys
+import threading
 import urllib.parse
+import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,9 +50,25 @@ class SPA(http.server.SimpleHTTPRequestHandler):
 
 
 def main():
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
-    print("serving %s on http://localhost:%d/  (ctrl-c to stop)" % (HERE, port))
-    http.server.ThreadingHTTPServer(("", port), SPA).serve_forever()
+    args = [a for a in sys.argv[1:] if a != "--no-browser"]
+    open_browser = "--no-browser" not in sys.argv[1:]
+    port = int(args[0]) if args else 8000
+
+    # Bind first, THEN open the browser: starting it from the .bat before the
+    # server was listening raced, and Chrome would land on a refused
+    # connection. Binding here means the port is already accepting by the time
+    # the tab opens.
+    httpd = http.server.ThreadingHTTPServer(("", port), SPA)
+    url = "http://localhost:%d/" % port
+    print("serving %s on %s  (ctrl-c to stop)" % (HERE, url))
+    if open_browser:
+        # in its own thread: webbrowser.open can block while the browser starts
+        threading.Thread(target=webbrowser.open, args=(url,),
+                         daemon=True).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
 
 
 if __name__ == "__main__":
