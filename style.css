@@ -219,6 +219,18 @@ a.eff { color: var(--info); }
 /* Distinct records that share a display name - six effects are called
    "Healing" - carry their id so a run of them is not one name repeated. */
 .idtag { margin-left: 4px; font: 10px var(--mono); color: var(--ink-3); opacity: .75; }
+/* A property's readers, grouped by the class that can reach them. */
+.propgroup { margin: 0 0 12px; }
+.propgrouphead {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
+  font: 600 12px var(--sans);
+}
+.propgrouphead img.inline { width: 16px; height: 16px; }
+.propgrouphead .via { margin-left: 4px; font: 11px var(--mono); color: var(--ink-3); }
+.propgroup .proprun { margin-left: 22px; }
+/* a hotspot has no page, so its row carries no link affordance */
+ul.links.plain li { padding-left: 0; }
+ul.links.plain .summon { color: var(--tip-name); }
 table.t td .via { margin-left: 8px; }
 
 .setbonus { margin: 8px 0 0 14px; padding-left: 12px; border-left: 1px solid var(--border); }
@@ -294,7 +306,9 @@ a.ess { color: #86b06b; }
   --tip-pip: #00E500;
   --tip-time: #009900;        /* "Duration:", "Cooldown:" */
   --tip-trait: #c1c1c1;
-  --tip-resist: #1fb5c3;      /* Effect_ResistanceCategory_Base */
+  /* Sampled off the Timeless Echoes of Battle tooltip. It had been entered
+     byte-reversed - #1FB5C3, a blue - which is how a gold line came out cyan. */
+  --tip-resist: #C3B51F;      /* Effect_ResistanceCategory_Base */
   --tip-mods: #00E500;        /* what a BENEFICIAL effect changes */
   --tip-mods-harm: #FF0000;   /* what a HARMFUL one does to its target */
   --prose-amt: #CCCC7F;       /* a number in the page's own prose, not a tip */
@@ -374,6 +388,9 @@ a.ess { color: #86b06b; }
 .tipeffdesc { font-size: 12px; color: var(--tip-desc); margin: 1px 0 3px; }
 .tipstat { font-size: 12px; color: var(--tip-mods); }
 .tipstat.cond { color: #6b6b6b; }
+/* "improved by Suppression" - not the client's wording, but the panel is the
+   only place a reader would look for it. */
+.tipimp { color: var(--ink-3); font-size: 11px; margin-left: 6px; }
 .tipdur { font-size: 12px; color: var(--tip-time); margin-top: 2px; }
 .tipresist { font-size: 12px; color: var(--tip-resist); }
 
@@ -531,6 +548,7 @@ a.pn:hover { color: var(--accent); }
 /* "Does not stack with": the group name and how many others are in it, as one
    link. The count is dimmer but inside the anchor, so all of it is clickable. */
 a.stacklink .stackcount { color: var(--ink-3); font-size: 11.5px; }
+.stackmembers { margin-top: 3px; font-size: 12px; }
 a.stacklink:hover .stackcount { color: var(--accent); }
 /* a stat cell's trailing note needs the same breathing room a table row gives it */
 .stat .v .via { margin-left: 8px; }

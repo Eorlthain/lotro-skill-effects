@@ -59,7 +59,8 @@ function routePath() {
 var BUCKETS = 128;
 var INDEX = [];
 var META = {};
-var cache = { skill: {}, effect: {}, rawskill: {}, raweffect: {} };
+var cache = { skill: {}, effect: {}, item: {},
+              rawskill: {}, raweffect: {} };
 var PROG = {};
 var selected = null;
 
@@ -114,7 +115,9 @@ function sideFile(name) {
   return cached(SIDE, name, "data/" + name + ".json")
     .catch(function () { return {}; });
 }
-function modSources() { return sideFile("modSources"); }
+function modSources() {
+  return sideFile("modSources").then(function (m) { MODSRC = m; return m; });
+}
 function gambitData() { return sideFile("gambits"); }
 function itemSetData() { return sideFile("itemsets"); }
 function stackingData() { return sideFile("stacking"); }
@@ -130,6 +133,9 @@ function displayTypeData() { return sideFile("displayTypes"); }
    same idea for the "Skill Type:" line. EFFECT_CACHE holds the few effect
    records the tooltip needs to expand inline. */
 var PROPS = null;
+/* The modifier-source index, kept global so a tooltip line can name the trait
+   that improves it without every caller threading it down. */
+var MODSRC = null;
 var DISPLAY_TYPES = null;
 var EFFECT_CACHE = {};
 
@@ -147,7 +153,8 @@ function preloadTipEffects(s) {
       (a[k] || []).forEach(function (e) { ids[e.id] = 1; });
     });
   });
-  ["userEffects", "userEffectsAdditive", "toggleEffects", "critEffects"]
+  ["userEffects", "userEffectsAdditive", "toggleEffects", "toggleUserEffects",
+   "critEffects"]
     .forEach(function (k) {
       (s[k] || []).forEach(function (e) {
         ids[typeof e === "number" ? e : e.id] = 1;
@@ -294,6 +301,23 @@ function reachable(id, classIds) {
   if (!classIds || !classIds.length || !SRC_CLASS) return true;
   var own = SRC_CLASS[String(id)];
   if (!own) return true;
+  for (var i = 0; i < classIds.length; i++) {
+    if (own.indexOf(classIds[i]) !== -1) return true;
+  }
+  return false;
+}
+
+/* The same question asked the other way round: only records POSITIVELY known
+   to belong to one of these classes. Used where a list is an answer to "what
+   does MY trait scale" rather than a catalogue - Foe of the Darkness is a
+   Warden trait, and Distraction, Swarm of Bees, Bastion of Light and One Trap
+   are unattributed or monster effects that nothing places anywhere. Waving
+   them through because nothing contradicts them made the list wrong; hiding
+   them with a count and a way back does not. */
+function ownedBy(id, classIds) {
+  if (!classIds || !classIds.length || !SRC_CLASS) return true;
+  var own = SRC_CLASS[String(id)];
+  if (!own) return false;
   for (var i = 0; i < classIds.length; i++) {
     if (own.indexOf(classIds[i]) !== -1) return true;
   }
@@ -480,7 +504,8 @@ function titleCase(s) {
 
 /* ---------------- search ---------------- */
 
-var typeOn = { s: true, e: true, c: true, y: true, z: true, g: true, r: true };
+var typeOn = { s: true, e: true, c: true, y: true, z: true, g: true, r: true,
+               i: true };
 var catFilter = "";
 
 /* "Fleche" should find "Fleche" with the accent. Strip combining marks so the
@@ -638,7 +663,8 @@ function runSearch() {
     txt.appendChild(el("div", "nm", r.n));
     var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
                  : r.t === "y" ? "Tracery" : r.t === "z" ? "Essence"
-                 : r.t === "g" ? "Set" : r.t === "r" ? "Trait" : "Class";
+                 : r.t === "g" ? "Set" : r.t === "r" ? "Trait"
+                 : r.t === "i" ? "Item" : "Class";
     // a category that just repeats the kind ("Set - Set") says nothing twice
     var cat = r.c && r.c !== "Class" && titleCase(r.c) !== kindWord
       ? " - " + titleCase(r.c) : "";
@@ -898,7 +924,8 @@ function chart(pts, label, xLabel) {
 function routeFor(t) {
   return t === "s" ? "skill" : t === "e" ? "effect"
        : t === "y" ? "tracery" : t === "z" ? "essence"
-       : t === "g" ? "set" : t === "r" ? "trait" : "class";
+       : t === "g" ? "set" : t === "r" ? "trait"
+       : t === "i" ? "item" : "class";
 }
 
 /* Built once at boot. This was a linear scan over all 39,540 index entries,
@@ -1328,6 +1355,7 @@ function renderSkill(s, progs, D, MS, ET) {
 
   // what the skill does comes first; where it comes from is reference
   if (D) section(host, "How you get it", obtainedBlock(s, D));
+  section(host, "Granted by these items", itemSources(s));
 
   section(host, "Area of effect", areaBlock(s));
   section(host, "Positional", positionalBlock(s));
@@ -1415,6 +1443,7 @@ function renderSkill(s, progs, D, MS, ET) {
    ["userEffectsOverride", "Caster effects (override)"],
    ["userEffectsAdditive", "Caster effects (additive)"],
    ["toggleEffects", "Toggle effects"],
+   ["toggleUserEffects", "Toggle effects on you"],
    ["critEffects", "Critical effects"],
    ["critEffectsAdditive", "Critical effects (additive)"],
    ["requiredEffects", "Requires these effects"],
@@ -1546,10 +1575,11 @@ function renderEffect(e, progs, MS, D, ET) {
     // Effects sharing an equivalence class do not stack with one another.
     // Naming the class was as far as this went; what a player is asking is
     // "so what else is in it", which is now one click away.
-    ["Does not stack with", stackLink(e.equivalence), "wide"]
+    ["Does not stack with", stackLink(e.equivalence, e.id), "wide"]
   ]));
 
-  section(host, "Stat modifiers", grantsBlock(e.stats, MS, progs, "Level", D, owners));
+  section(host, "Stat modifiers",
+          grantsBlock(e.stats, MS, progs, "Level", D, owners, true));
 
   if (D && MS) section(host, "Modifiers", modsBlock(e, D, MS));
 
@@ -1661,6 +1691,10 @@ function renderEffect(e, progs, MS, D, ET) {
     section(host, "Granted by these set bonuses", sul);
   }
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
+  section(host, "Granted by these items", itemSources(e));
+  section(host, "Switched on by these, through a property", modGrantSources(e));
+  section(host, "Left on the ground by these", hotspotSources(e));
+  section(host, "Put on you by world state", worldStateSources(e));
   if (e.usedBySkills) {
     section(host, "Applied by these skills",
             linkList(e.usedBySkills.filter(function (id) {
@@ -1820,7 +1854,9 @@ function obtainedBlock(s, D) {
     } else if (o.how === "rank") {
       li.appendChild(el("span", null, o.rank ? " - earned at rank " + o.rank
                                              : " - available from the start"));
-      if (o.cost) li.appendChild(el("span", "via", o.cost + " destiny points"));
+      // MonsterPlay_SkillCost is a destiny-point price, and destiny points are
+      // no longer part of monster play - the number is still in the DAT but it
+      // is not something a reader can spend, so it is not shown.
     } else {
       var t = D.traits[String(o.trait)];
       li.appendChild(el("span", null, " - from trait "));
@@ -2003,8 +2039,10 @@ function renderClass(c, D) {
       (byLevel[at] = byLevel[at] || []).push(e);
     });
     var t = el("table", "t");
-    t.innerHTML = "<tr><th>" + (creep ? "Rank" : "Level") + "</th><th>Skill</th><th>" +
-      (creep ? "Cost" : "Prerequisite") + "</th></tr>";
+    // The creep table's third column held the destiny-point cost, which the
+    // game no longer has; with nothing to put there the column goes too.
+    t.innerHTML = "<tr><th>" + (creep ? "Rank" : "Level") + "</th><th>Skill</th>" +
+      (creep ? "" : "<th>Prerequisite</th>") + "</tr>";
     Object.keys(byLevel).map(Number).sort(function (a, b) { return a - b; })
       .forEach(function (lvl) {
         byLevel[lvl].forEach(function (e, i) {
@@ -2021,14 +2059,11 @@ function renderClass(c, D) {
           var a = el("a", null, meta ? meta.n : "#" + e.id);
           a.href = urlFor("skill/" + e.id);
           td1.appendChild(a);
-          var td2;
-          if (creep) {
-            td2 = el("td", "muted", e.cost ? e.cost + " destiny points" : "free");
-          } else {
+          tr.appendChild(td0); tr.appendChild(td1);
+          if (!creep) {
             var pm = e.prerequisite ? nameOf(e.prerequisite) : null;
-            td2 = el("td", "muted", pm ? pm.n : "");
+            tr.appendChild(el("td", "muted", pm ? pm.n : ""));
           }
-          tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2);
           t.appendChild(tr);
         });
       });
@@ -2248,7 +2283,12 @@ function renderTrait(t, D, MS, progs) {
     ["Minimum level", t.minLevel]
   ]));
   // a trait's Mod_Progression is indexed by the trait's RANK, not by level
-  section(host, "What it changes", grantsBlock(t.stats, MS, progs, "Rank", D));
+  // Scoped to the classes that can actually reach this trait. Foe of the
+  // Darkness is a Warden trait, and its Light Damage property is read by
+  // every class's light skills - so the unscoped cell answered "what does
+  // this trait scale" with a list of Minstrel cries.
+  section(host, "What it changes",
+          grantsBlock(t.stats, MS, progs, "Rank", D, ownerClasses(t), true));
 
   if (t.skills) {
     section(host, "Skills granted", linkList(t.skills.map(function (g) {
@@ -2451,13 +2491,36 @@ function sourceCell(prop, MS, D, only, noGear) {
   return td;
 }
 
+/* "a Warden", "Reaver or Defiler" - how a scoped page names whose page it is. */
+function classNames(ids, D) {
+  var named = (ids || []).map(function (c) {
+    var cc = D && D.classes ? D.classes[String(c)] : null;
+    return cc ? cc.name : null;
+  }).filter(Boolean);
+  if (!named.length) return null;
+  if (named.length === 1) return "a " + named[0];
+  if (named.length === 2) return named.join(" or ");
+  return named.slice(0, 2).join(", ") + " and " + (named.length - 2) + " more";
+}
+
 /* The other direction from modsBlock: a trait or effect says which properties
    it grants, and this shows what those properties actually scale - across
    skills, and across other effects and traits, which read them through
    Mod_ModifierList. */
-function grantsBlock(stats, MS, progs, xLabel, D, only) {
+function grantsBlock(stats, MS, progs, xLabel, D, only, ownScope) {
   if (!stats || !stats.length) return null;
   var wrap = el("div");
+  // ownScope says `only` is "the classes this record BELONGS to", which is
+  // what makes hiding the unattributed correct. A tracery or item set passes
+  // every Free Peoples class instead - a scope that means "not monster play",
+  // not "mine" - and there the lenient filter is still the right one.
+  var canScope = !!(ownScope && only && only.length && SRC_CLASS);
+  var strict = canScope;
+  var host = el("div");
+  wrap.appendChild(host);
+  function draw() {
+  host.textContent = "";
+  var hidden = 0;
   var t = el("table", "t");
   t.innerHTML = "<tr><th>Property</th><th>How</th><th>Amount</th><th>What it scales</th></tr>";
 
@@ -2510,10 +2573,33 @@ function grantsBlock(stats, MS, progs, xLabel, D, only) {
     }
     tr.appendChild(td2);
 
-    tr.appendChild(readersCell(st.stat, MS, D, only));
+    var rc = readersCell(st.stat, MS, D, only, canScope && strict);
+    hidden += rc.hiddenReaders || 0;
+    tr.appendChild(rc);
     t.appendChild(tr);
   });
-  wrap.appendChild(t);
+  host.appendChild(t);
+
+  // The escape hatch. Hiding the unattributed is right for the question this
+  // table answers, but a reader chasing an odd property should still be able
+  // to see everything that touches it.
+  if (canScope && (hidden || !strict)) {
+    var who = classNames(only, D) || "this class";
+    var foot = el("div", "muted");
+    foot.style.cssText = "font-size:11.5px;margin-top:6px";
+    foot.appendChild(document.createTextNode(strict
+      ? "Showing only what " + who + " can reach - " + hidden + " reader" +
+        (hidden === 1 ? "" : "s") + " hidden as belonging elsewhere or to "
+        + "nothing at all.  "
+      : "Showing every reader, whatever class it belongs to.  "));
+    var a = el("a", null, strict ? "show all" : "show only this class");
+    a.href = "#";
+    a.onclick = function (ev) { ev.preventDefault(); strict = !strict; draw(); return false; };
+    foot.appendChild(a);
+    host.appendChild(foot);
+  }
+  }
+  draw();
 
   if (progs) {
     stats.forEach(function (st) {
@@ -2552,18 +2638,28 @@ function readerLink(id, kind, cls, dup) {
   return a;
 }
 
-function readersCell(prop, MS, D, only) {
+function readersCell(prop, MS, D, only, strict) {
   var td = el("td");
   var src = (MS && MS[prop]) || {};
   var any = false;
   var SHOW = 10;
+  // On a class-scoped page an unattributed record is not a maybe, it is
+  // noise - so `strict` demands a positive match. Turning it off shows
+  // everything, not the old lenient filter: "show all" that still hid the
+  // other classes was a lie in a link.
+  var hidden = 0, seen = {};
+  function keep(id) {
+    if (!strict || ownedBy(id, only)) return true;
+    if (!seen[id]) { seen[id] = 1; hidden++; }
+    return false;
+  }
 
   // Same story on the skill side: one row per value slot means a skill that
   // scales two of its own numbers by this property arrived twice under the
   // same field, and was listed twice under the same name.
   var byField = {};
   (src.skills || []).forEach(function (u) {
-    if (!reachable(u[0], only)) return;
+    if (!keep(u[0])) return;
     var list = byField[u[1]] = byField[u[1]] || [];
     if (list.indexOf(u[0]) === -1) list.push(u[0]);
   });
@@ -2585,7 +2681,7 @@ function readersCell(prop, MS, D, only) {
 
   [["readEffects", "effect", "Effects"], ["readTraits", "trait", "Traits"]].forEach(function (spec) {
     var rows = (src[spec[0]] || []).filter(function (r) {
-      return reachable(r[0], only);
+      return keep(r[0]);
     });
     if (!rows.length) return;
     // One row per FIELD the reader scales, so an effect that scales both its
@@ -2615,7 +2711,12 @@ function readersCell(prop, MS, D, only) {
     td.appendChild(line);
   });
 
-  if (!any) td.appendChild(el("span", "muted", "nothing in this dataset reads it"));
+  if (!any) {
+    td.appendChild(el("span", "muted", hidden
+      ? "nothing this class can reach reads it"
+      : "nothing in this dataset reads it"));
+  }
+  td.hiddenReaders = hidden;
   return td;
 }
 
@@ -2658,7 +2759,8 @@ function chanceBlock(s, D, MS) {
       (a[k] || []).forEach(function (e) { refs.push(e); });
     });
   });
-  ["userEffects", "userEffectsAdditive", "toggleEffects", "critEffects"]
+  ["userEffects", "userEffectsAdditive", "toggleEffects", "toggleUserEffects",
+   "critEffects"]
     .forEach(function (k) { (s[k] || []).forEach(function (e) { refs.push(e); }); });
 
   var rows = [];
@@ -2706,6 +2808,7 @@ function chanceBlock(s, D, MS) {
 function conditionalBlock(s, D) {
   var rows = s.conditionalEffects || [];
   if (!rows.length) return null;
+  var mine = ownerClasses(s);
   var t = el("table", "t");
   t.innerHTML = "<tr><th>Applies</th><th>Effect</th><th>Only when</th></tr>";
   rows.forEach(function (r) {
@@ -2717,7 +2820,17 @@ function conditionalBlock(s, D) {
     tr.appendChild(effectRunCell(r.effects));
 
     var td2 = el("td");
-    var traits = (r.traits || []).filter(function (id) { return D.traits[String(id)]; });
+    // Threat properties are shared: Trait_Threat_overTime_Extreme is granted
+    // by every class's tank specialization, so Spear of Fate listed The Hide
+    // and Defender of the Free beside Determination. Only the ones this
+    // skill's own class can slot belong here.
+    var traits = (r.traits || []).filter(function (id) {
+      return D.traits[String(id)] && reachable(id, mine);
+    });
+    if (!traits.length) {
+      // nothing survived the scope - better the whole list than an empty cell
+      traits = (r.traits || []).filter(function (id) { return D.traits[String(id)]; });
+    }
     if (traits.length) {
       td2.appendChild(el("span", "muted", "traited "));
       td2.appendChild(linkRun(traits.map(function (id) {
@@ -2857,6 +2970,38 @@ function vitalName(type) {
   return spaceWords(type);
 }
 
+/* "Resistance: Song (160)". Effect_Resist_Level is 0 on almost every effect
+   that names a category, and the number the client shows there is the
+   caster's level - so it follows the panel's level box. */
+/* An aura is a field around whoever carries it. Its reach and its audience
+   are the whole of what tells one aura from another, and neither was on the
+   panel - "Aura, 5m radius" is the first thing a reader wants. */
+function auraWording(e) {
+  var a = e.aura;
+  if (!a) return null;
+  var bits = [];
+  if (a.radius !== undefined) bits.push(fmt(a.radius) + "m radius");
+  var who = [];
+  if (a.affectsPlayers) who.push("players");
+  if (a.affectsCaster) who.push("its carrier");
+  if (who.length) bits.push("affects " + who.join(" and "));
+  return "Aura" + (bits.length ? " - " + bits.join(", ") : "");
+}
+
+function resistWording(rec, level, withLevel) {
+  var cats = rec.resistCategory;
+  if (!cats) return null;
+  var named = Array.isArray(cats) ? cats.map(titleCase).join(", ")
+                                  : titleCase(cats);
+  // The level belongs to the EFFECT's line only. A skill naming a resistance
+  // category is saying what its effects can be resisted as, not carrying a
+  // resist level of its own - Blinding Dust the skill reads "Resistance:
+  // Wound" and Blinding Dust the effect reads "Resistance: Wound (160)".
+  if (!withLevel) return "Resistance: " + named;
+  var at = rec.resistLevel || (level === undefined ? LEVEL_CAP : level);
+  return "Resistance: " + named + " (" + at + ")";
+}
+
 function tipLine(host, label, value, cls) {
   if (value === null || value === undefined || value === "") return;
   var d = el("div", "tl" + (cls ? " " + cls : ""));
@@ -2941,9 +3086,7 @@ function tooltipPanel(s, progs, D, level) {
     tipLine(top, "Channel Duration:", secs(s.channel.duration));
   }
   if (s.resistCategory) {
-    tipLine(top, null, "Resistance: " + (Array.isArray(s.resistCategory)
-      ? s.resistCategory.map(titleCase).join(", ")
-      : titleCase(s.resistCategory)), "tipresist");
+    tipLine(top, null, resistWording(s, level), "tipresist");
   }
   var shown = (s.displayType || []).map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
@@ -2999,7 +3142,8 @@ function tooltipPanel(s, progs, D, level) {
   // two of the 171 channels carry no toggle effects of their own.
   if (s.channel) {
     tipLine(foot, null, "Channel Skill", "time");
-  } else if (s.toggleEffects && s.toggleEffects.length) {
+  } else if ((s.toggleEffects && s.toggleEffects.length) ||
+             (s.toggleUserEffects && s.toggleUserEffects.length)) {
     tipLine(foot, null, "Toggle Skill", "time");
   }
   if (s.gambitAdds) {
@@ -3053,10 +3197,16 @@ function effectTooltip(e, progs, D, level) {
   box.appendChild(head);
 
   // Effect_ResistanceCategory_Base comes before the description in the client
+  var aur = auraWording(e);
+  if (aur) {
+    var ab = el("div", "tipbody");
+    tipLine(ab, null, aur);
+    box.appendChild(ab);
+  }
   if (e.resistCategory) {
     var rc = el("div", "tipbody");
     var rl = el("div", "tl tipresist");
-    rl.textContent = "Resistance: " + titleCase(e.resistCategory);
+    rl.textContent = resistWording(e, level, true);
     rc.appendChild(rl);
     box.appendChild(rc);
   }
@@ -3184,16 +3334,24 @@ function resolveStat(st, progs, index, level) {
 
 /* How far a trait's ranks actually run: the end of its own curves, and any
    rank at which it hands over a skill or an effect. */
+/* Whether a trait has a rank ladder at all. Trait_Virtue_Maximum_Rank is the
+   client's own answer, and a trait without one is not ranked: its curves are
+   indexed by the character's LEVEL, not by a rank. Every creep trait is in
+   that group - a creep cannot buy ranks, so Flayer of Flesh has one rank whose
+   values are read at the level cap. Reading the end of a level curve as a rank
+   count gave those traits 160 ranks and 160 identical-looking blocks. */
+function traitIsRanked(t) {
+  if (t.maxRank) return true;
+  return (t.skills || []).concat(t.effects || [])
+    .some(function (g) { return g && g.rank > 1; });
+}
+
 function traitMaxRank(t, progs) {
   // The client stores the answer. Guessing it from a curve's length is wrong:
-  // modifier arrays are padded to a fixed width and repeat their last value.
+  // modifier arrays are padded to a fixed width and repeat their last value,
+  // and an unranked trait's curve is a LEVEL curve that runs to 160.
   if (t.maxRank) return t.maxRank;
   var top = 1;
-  (t.stats || []).forEach(function (st) {
-    if (!st.progression) return;
-    var pts = curvePoints(progs && progs[String(st.progression)], 0, progs);
-    if (pts && pts.length) top = Math.max(top, pts[pts.length - 1][0]);
-  });
   (t.skills || []).concat(t.effects || []).forEach(function (g) {
     if (g && g.rank) top = Math.max(top, g.rank);
   });
@@ -3276,10 +3434,8 @@ function traitTooltip(t, progs, D, level, maxRank) {
   });
 
   var stats = t.stats || [];
-  var ranked = stats.some(function (st) { return st.progression; }) ||
-    (t.skills || []).concat(t.effects || []).some(function (g) {
-      return g && g.rank > 1;
-    });
+  var ranked = traitIsRanked(t);
+  var lvl = level === undefined ? LEVEL_CAP : level;
   var top = ranked ? maxRank : 1;
 
   for (var r = 1; r <= top; r++) {
@@ -3295,7 +3451,9 @@ function traitTooltip(t, progs, D, level, maxRank) {
       // increases the damage your target receives." again instead of the
       // +2.5% the rank actually buys. The client lists only what the rank adds.
       if (r > 1 && !st.progression) return;
-      var line = statLine(resolveStat(st, progs, r, level), "rank");
+      // An unranked trait indexes its curves by level, not by rank.
+      var line = statLine(resolveStat(st, progs, ranked ? r : lvl, level),
+                          ranked ? "rank" : "level");
       if (!line) return;
       // Every rank reads the same colour in the client - sampled off a
       // screenshot at #99FF00, first rank included. Painting rank 1 pale was
@@ -3375,9 +3533,11 @@ function traitTooltip(t, progs, D, level, maxRank) {
 
 /* Only show a rank box when a rank actually changes something. */
 function traitUsesRank(t, progs) {
-  if ((t.stats || []).some(function (st) { return st.progression; })) return true;
-  return (t.skills || []).concat(t.effects || [])
-    .some(function (g) { return g && g.rank > 1; });
+  // A level box is worth showing whenever a curve is on the panel - an
+  // unranked trait's curve moves with level even though its rank never does.
+  return (t.stats || []).some(function (st) { return st.progression; }) ||
+    (t.skills || []).concat(t.effects || [])
+      .some(function (g) { return g && g.rank > 1; });
 }
 
 /* Only show a level box when something on the panel actually moves with it. */
@@ -3527,6 +3687,7 @@ function effectBlocks(s, progs, level) {
   });
   (s.userEffects || []).forEach(function (e) { refs.push(e); });
   (s.toggleEffects || []).forEach(function (e) { refs.push(e); });
+  (s.toggleUserEffects || []).forEach(function (e) { refs.push(e); });
 
   refs.slice(0, 6).forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
@@ -3638,6 +3799,14 @@ function statWording(st, meta) {
   if (d.indexOf("*") === -1) return d;
   if (st.value === undefined || st.value === null) return null;
   d = d.replace(/([-+x])[ \t]*\*/g, function (_, sign) {
+    // A wording that puts a SIGN in front of its placeholder is asking for a
+    // delta, not a factor: "- * Outgoing Damage" on a Multiply of 0.99 is the
+    // client's "-1% Outgoing Damage", and pasting the factor in gave the
+    // nonsense "-x0.99". 109 wordings are written this way.
+    if ((sign === "-" || sign === "+") && st.op === "Multiply" &&
+        typeof st.value === "number" && !(meta && meta.p)) {
+      return sign + fmt(Math.abs((st.value - 1) * 100), 3) + "%";
+    }
     var amt = statAmount(st, meta, false);
     // A plain multiplier is written "x0.8" by statAmount, and 508 wordings
     // already put the x in front of their own placeholder - "x * Outgoing
@@ -3690,8 +3859,34 @@ function statLine(st, xLabel) {
     // sets were being lost this way.
     return said ? multiLine("tipstat", said) : null;
   }
-  if (said) return multiLine("tipstat", said);
-  return el("div", "tipstat", statAmount(st, meta, true) + " " + name);
+  var line = said ? multiLine("tipstat", said)
+                  : el("div", "tipstat", statAmount(st, meta, true) + " " + name);
+  return line ? withTraitNote(line, st) : null;
+}
+
+/* A modifier can be improved by a property something else grants, and where
+   that something is a TRAIT the reader can go and take it - Suppression's
+   debuff grows by up to 2% with ranks in the Suppression trait, and nothing
+   on the panel said so. Only trait sources are named: an item set or another
+   effect is not a choice the reader makes here, and 1,636 modifier lines
+   carry one of those against 445 that carry a trait. */
+function withTraitNote(line, st) {
+  var props = st.modifiedBy || [];
+  if (!props.length || !MODSRC) return line;
+  var names = [], seen = {};
+  props.forEach(function (p) {
+    ((MODSRC[p] || {}).traits || []).forEach(function (id) {
+      var meta = nameOf(id);
+      if (!meta || seen[meta.n]) return;
+      seen[meta.n] = 1;
+      names.push(meta.n);
+    });
+  });
+  if (!names.length) return line;
+  var shown = names.slice(0, 3).join(", ") +
+    (names.length > 3 ? " and " + (names.length - 3) + " more" : "");
+  line.appendChild(el("span", "tipimp", " improved by " + shown));
+  return line;
 }
 
 /* Some wordings carry their own line breaks, written as a literal \n - and
@@ -3724,11 +3919,25 @@ function damageExpr(a, progs, level) {
   var mod = a.damageModifier === undefined ? 1 : a.damageModifier;
   if (a.implementContribution) parts.push(fmt(a.implementContribution) + " x W");
   if (a.damageContribution) parts.push(fmt(a.damageContribution) + " x A");
-  if (!parts.length) return null;
-  var expr = parts.join(" + ");
-  if (mod !== 1) expr = fmt(mod) + " x (" + expr + ")";
   var cap = a.damageMax !== undefined ? a.damageMax
           : (a.damageMaxProgression ? progAt(progs, a.damageMaxProgression, level) : null);
+  // A hook with no weapon and no damage-add contribution is not a hook that
+  // deals no damage - it is one whose damage IS Skill_AttackHook_HookDamageMax,
+  // a flat curve read at the character's level. That is how nearly every creep
+  // skill is written: Gut Punch's 2,070 at 160 lives only there, and requiring
+  // a W or an A term meant 6,300 attack hooks printed no damage line at all.
+  if (!parts.length) {
+    if (!cap) return null;
+    var flat = cap * mod;
+    // Under 1 it is not a damage figure at all: 27 of the 33 such hooks carry
+    // a Hook Damage Max modifier, which means the curve is a coefficient some
+    // property scales - a skirmish soldier's 0.4, not four tenths of a hit.
+    // Printing it rounded gave "0 Common Damage".
+    if (flat < 1) return null;
+    return flatDamage(a, flat);
+  }
+  var expr = parts.join(" + ");
+  if (mod !== 1) expr = fmt(mod) + " x (" + expr + ")";
   // W and A are the two numbers this data cannot know. Once the reader has
   // supplied them once, in the sidebar, the expression is just arithmetic.
   var W = parseFloat(PREFS.wdps), A = parseFloat(PREFS.dmgAdd);
@@ -3752,6 +3961,25 @@ function damageExpr(a, progs, level) {
   if (cap) tail.push("max " + num(cap));
   if (a.critMultiplier) tail.push("crit x" + fmt(a.critMultiplier));
   if (tail.length) span.appendChild(el("span", "muted", "  " + tail.join(", ")));
+  return span;
+}
+
+/* The same line for a hook whose damage is a flat number rather than an
+   expression - no W, no A, nothing for the reader to supply. */
+function flatDamage(a, value) {
+  var span = el("span", "tv");
+  span.appendChild(el("code", "dmg", num(value)));
+  if (a.damageMaxVariance) {
+    span.appendChild(el("span", "muted", "  +/-" + fmt(a.damageMaxVariance * 100, 0) + "%"));
+  }
+  var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
+           : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
+  var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
+    .filter(Boolean).join(" ");
+  span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
+  if (a.critMultiplier) {
+    span.appendChild(el("span", "muted", "  crit x" + fmt(a.critMultiplier)));
+  }
   return span;
 }
 
@@ -3971,6 +4199,173 @@ function renderTracery(t, D, MS, progs) {
 /* An item set: the pieces that count towards it, and what each threshold
    grants. The effects hanging off a threshold are where every Itemset_*
    property in the game comes from - nothing else sets them. */
+/* An item page, kept to the one question this database answers about an item:
+   what does it put on you. Nothing about where it drops or what it sells for -
+   an item is here because it is the answer to "what applies that effect". */
+function renderItem(it, D) {
+  var host = el("div");
+  var head = el("div", "head");
+  var img = el("img");
+  img.src = iconUrl(it.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var h = el("div");
+  h.appendChild(el("h2", null, it.name));
+  h.appendChild(el("div", "id", "item " + it.id));
+  head.appendChild(h);
+  host.appendChild(head);
+
+  var tags = el("div", "tags");
+  tags.appendChild(el("span", "tag kind", "Item"));
+  if (it.category) tags.appendChild(el("span", "tag", spaceWords(it.category)));
+  if (it.quality) tags.appendChild(el("span", "tag", spaceWords(it.quality)));
+  host.appendChild(tags);
+
+  section(host, "At a glance", statRow([
+    ["Item level", it.itemLevel],
+    ["Requires level", it.minLevel],
+    ["Cooldown", it.cooldown]
+  ]));
+
+  [["onUse", "What it does when used"],
+   ["whileEquipped", "While it is equipped"],
+   ["hotspot", "What it leaves behind"]].forEach(function (pair) {
+    if (!it[pair[0]]) return;
+    section(host, pair[1], linkList(it[pair[0]], "effect"));
+  });
+  // What it hands over, and what gates it. An item can be here for the gate
+  // alone: Fragment of Mordirith's Crown grants nothing and cannot be used
+  // while a particular effect is on you, and that is the whole of its entry.
+  [["grantsSkill", "Skill it grants", "skill"],
+   ["usesSkill", "Skill it uses", "skill"],
+   ["mountSkillShort", "Skill it grants on a short steed", "skill"],
+   ["mountSkillTall", "Skill it grants on a tall steed", "skill"],
+   ["requiresEffect", "Only usable while you have", "effect"],
+   ["restrictedByEffect", "Cannot be used while you have", "effect"]]
+    .forEach(function (row) {
+      if (it[row[0]]) section(host, row[1], linkList([it[row[0]]], row[2]));
+    });
+  if (it.barsSkills) {
+    section(host, "Skills it bars", linkList(it.barsSkills, "skill"));
+  }
+  return host;
+}
+
+/* A property-response callback: "while this world property reads 4, everything
+   matching this filter gets these effects". It is how the Ettenmoors relic
+   buffs land on a whole side at once, and until now nothing on the effect's
+   page said where it came from. The callback itself has no name, so what is
+   worth printing is the condition and the audience. */
+var SIDE_WORDS = { Good: "the Free Peoples", Evil: "the creep side",
+                   Player: "players" };
+function worldStateSources(rec) {
+  var rows = rec.fromWorldState;
+  if (!rows || !rows.length) return null;
+  var box = el("div");
+  var ul = el("ul", "links plain");
+  rows.forEach(function (r) {
+    var li = el("li");
+    var who = (r.filters || []).map(function (f) {
+      return SIDE_WORDS[f] || spaceWords(f);
+    }).join(", ");
+    var when = r.floor !== undefined && r.floor === r.ceiling
+      ? "reads " + fmt(r.floor)
+      : (r.floor !== undefined || r.ceiling !== undefined)
+        ? "is between " + fmt(r.floor === undefined ? 0 : r.floor) +
+          " and " + fmt(r.ceiling === undefined ? 0 : r.ceiling)
+        : "changes";
+    var line = el("span", "summon");
+    if (r.property) {
+      line.appendChild(document.createTextNode("While "));
+      line.appendChild(propCode(r.property));
+      line.appendChild(document.createTextNode(" " + when));
+    } else {
+      line.appendChild(document.createTextNode("While a world property " + when));
+    }
+    li.appendChild(line);
+    if (who) li.appendChild(el("span", "via", "applies to " + who));
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  if (rec.fromWorldStateMore) {
+    box.appendChild(el("p", "muted", "and " + rec.fromWorldStateMore +
+      " more not listed"));
+  }
+  return box;
+}
+
+/* A hotspot is a patch of ground that does something to whoever stands in it.
+   Like a summon it has no page - it is a thing in the world, not a record a
+   reader browses - so it is named rather than linked. */
+function hotspotSources(rec) {
+  var rows = rec.fromHotspots;
+  if (!rows || !rows.length) return null;
+  var box = el("div");
+  var ul = el("ul", "links plain");
+  rows.forEach(function (row) {
+    var li = el("li");
+    li.appendChild(el("span", "summon", row[1]));
+    li.appendChild(el("span", "via", "hotspot " + row[0]));
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  if (rec.fromHotspotsMore) {
+    box.appendChild(el("p", "muted", "and " + rec.fromHotspotsMore +
+      " more hotspot" + (rec.fromHotspotsMore === 1 ? "" : "s") + " not listed"));
+  }
+  return box;
+}
+
+/* A modifier can hand over an effect rather than a number - "while this
+   property is set, you also get X". A Big Battle banner upgrade switches its
+   aura on this way, and nothing on the aura's page said so. */
+function modGrantSources(rec) {
+  var rows = rec.grantedByMods;
+  if (!rows || !rows.length) return null;
+  var ul = el("ul", "links");
+  rows.forEach(function (row) {
+    var meta = nameOf(row[0]);
+    if (!meta) return;
+    var li = el("li");
+    var img = el("img");
+    img.src = iconUrl(meta.k);
+    img.alt = "";
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    li.appendChild(img);
+    var body = el("div");
+    var a = el("a", null, meta.n);
+    a.href = urlFor(routeFor(meta.t) + "/" + row[0]);
+    body.appendChild(a);
+    if (row[2]) {
+      var via = el("span", "via");
+      via.appendChild(document.createTextNode(" through "));
+      via.appendChild(propCode(row[2]));
+      body.appendChild(via);
+    }
+    li.appendChild(body);
+    ul.appendChild(li);
+  });
+  return ul.children.length ? ul : null;
+}
+
+/* Which items put an effect on you - the only source a food buff or a potion
+   effect has. 2,903 effects have no other. */
+function itemSources(rec) {
+  if (!rec.fromItems || !rec.fromItems.length) return null;
+  var WORDS = { onUse: "on use", whileEquipped: "while equipped",
+                hotspot: "from its hotspot" };
+  var box = el("div");
+  box.appendChild(linkList(rec.fromItems.map(function (row) {
+    return { id: row[0], via: WORDS[row[1]] || row[1] };
+  }), "item"));
+  if (rec.fromItemsMore) {
+    box.appendChild(el("p", "muted", "and " + rec.fromItemsMore +
+      " more item" + (rec.fromItemsMore === 1 ? "" : "s") + " not listed"));
+  }
+  return box;
+}
+
 function renderSet(st, D, MS, progs) {
   var host = el("div");
   var head = el("div", "head");
@@ -4167,7 +4562,13 @@ function buildPrefsUI() {
 
 /* ---------------- stacking groups ---------------- */
 
-function stackLink(name) {
+/* SMALL is where naming the members beats counting them. 579 of the 654
+   groups are under ten, and for those "(2 others)" was making the reader open
+   a page to learn two names. The big ones keep the count - a boss-fight class
+   with 52 members is a list nobody reads in a stat cell. */
+var STACK_LIST_MAX = 10;
+
+function stackLink(name, selfId) {
   if (!name) return null;
   var group = STACKING && STACKING[name];
   if (!group || group.length < 2) {
@@ -4182,11 +4583,28 @@ function stackLink(name) {
   var a = el("a", "stacklink");
   a.href = stackUrl(name);
   a.appendChild(document.createTextNode(spaceWords(name)));
-  var rest = group.length - 1;
-  // a real space, not a CSS gap - this text gets read and copied
-  a.appendChild(el("span", "stackcount",
-    " (" + rest + " other" + (rest === 1 ? "" : "s") + ")"));
-  return a;
+  var others = group.filter(function (id) { return id !== selfId; });
+  if (group.length >= STACK_LIST_MAX || !others.length) {
+    var rest = group.length - (others.length === group.length ? 0 : 1);
+    // a real space, not a CSS gap - this text gets read and copied
+    a.appendChild(el("span", "stackcount",
+      " (" + rest + " other" + (rest === 1 ? "" : "s") + ")"));
+    return a;
+  }
+  var box = el("div");
+  box.appendChild(a);
+  var list = el("div", "stackmembers");
+  // A stacking group is exactly where one name repeats - two of the three
+  // Reveal Weakness effects are called "Reveal Weakness" - so the id trails
+  // an ambiguous one, as it does everywhere else on the site.
+  var dup = ambiguousNames(others);
+  list.appendChild(linkRun(others.map(function (id) {
+    return function () {
+      return nameOf(id) ? readerLink(id, "effect", "eff", dup) : null;
+    };
+  }), STACK_LIST_MAX, 0));
+  box.appendChild(list);
+  return box;
 }
 
 /* Everything sharing one equivalence class - which is to say, everything that
@@ -4261,12 +4679,121 @@ function renderProperty(prop, MS, D) {
   granted.appendChild(sourceFragment(prop, MS, D, 40));
   section(host, "Granted by", granted);
 
-  // readersCell builds a table cell; the same content reads fine on its own
-  var readers = el("div", "proprun");
-  var td = readersCell(prop, MS, D, null);
-  while (td.firstChild) readers.appendChild(td.firstChild);
-  section(host, "What it scales", readers);
+  // A property page is the one place the reader list is long enough to be
+  // unreadable flat - Resistance Penetration Percent is read by 194 skills
+  // across ten classes. Grouping by class turns it into ten short answers.
+  section(host, "What it scales", readersByClass(prop, MS, D)
+                                  || el("p", "muted", "Nothing reads it."));
   return host;
+}
+
+/* The readers of one property, in class order, with everything the data
+   cannot place gathered at the end rather than mixed through. */
+function readersByClass(prop, MS, D) {
+  var src = (MS && MS[prop]) || {};
+  var rows = [];
+  (src.skills || []).forEach(function (u) {
+    rows.push({ id: u[0], kind: "skill", field: u[1] });
+  });
+  [["readEffects", "effect"], ["readTraits", "trait"]].forEach(function (spec) {
+    (src[spec[0]] || []).forEach(function (r) {
+      rows.push({ id: r[0], kind: spec[1], field: r[1] });
+    });
+  });
+  if (!rows.length) return null;
+
+  var NONE = "none";
+  var buckets = {}, order = [];
+  rows.forEach(function (row) {
+    var own = (SRC_CLASS && SRC_CLASS[String(row.id)]) || [];
+    // A record reachable by two classes belongs under both - that is the
+    // truthful answer to "can my class reach it", asked once per class.
+    (own.length ? own : [NONE]).forEach(function (cid) {
+      var key = String(cid);
+      if (!buckets[key]) { buckets[key] = []; order.push(key); }
+      buckets[key].push(row);
+    });
+  });
+
+  function nameOfClass(key) {
+    if (key === NONE) return null;
+    var c = D && D.classes ? D.classes[key] : null;
+    return c || null;
+  }
+  order.sort(function (a, b) {
+    if (a === NONE) return 1;
+    if (b === NONE) return -1;
+    var ca = nameOfClass(a), cb = nameOfClass(b);
+    // Free Peoples first, then monster play, each alphabetically
+    var sa = (ca && ca.side === "creep") ? 1 : 0;
+    var sb = (cb && cb.side === "creep") ? 1 : 0;
+    if (sa !== sb) return sa - sb;
+    return ((ca && ca.name) || a).localeCompare((cb && cb.name) || b);
+  });
+
+  var box = el("div");
+  order.forEach(function (key) {
+    var c = nameOfClass(key);
+    var group = el("div", "propgroup");
+    var head = el("div", "propgrouphead");
+    if (c) {
+      var im = el("img");
+      im.src = iconUrl(c.icon);
+      im.alt = "";
+      im.className = "inline";
+      im.onerror = function () { this.style.visibility = "hidden"; };
+      head.appendChild(im);
+      var a = el("a", null, c.name);
+      a.href = urlFor("class/" + c.id);
+      head.appendChild(a);
+    } else {
+      head.appendChild(el("span", null, "No class attached"));
+    }
+    var ids = {};
+    buckets[key].forEach(function (r) { ids[r.id] = 1; });
+    // a real space, not just a CSS margin - this text gets read and copied
+    head.appendChild(el("span", "via", " " + Object.keys(ids).length + " reader" +
+      (Object.keys(ids).length === 1 ? "" : "s")));
+    group.appendChild(head);
+    group.appendChild(readerRuns(buckets[key]));
+    box.appendChild(group);
+  });
+  if (src.skillsMore || src.readEffectsMore || src.readTraitsMore) {
+    box.appendChild(el("div", "muted",
+      "Some readers are not listed - the index keeps a bounded number per "
+      + "property."));
+  }
+  return box;
+}
+
+/* One field per line - "Critical Hit on A, B, C" - with a record that scales
+   two of its own numbers by this property named once, carrying both fields. */
+function readerRuns(rows) {
+  var frag = el("div", "proprun");
+  var byField = {}, fields = [];
+  rows.forEach(function (r) {
+    var f = r.field || "";
+    if (!byField[f]) { byField[f] = { order: [], of: {} }; fields.push(f); }
+    var b = byField[f];
+    if (!b.of[r.id]) { b.of[r.id] = r.kind; b.order.push(r.id); }
+  });
+  fields.sort();
+  fields.forEach(function (f) {
+    var b = byField[f];
+    var line = el("div");
+    if (f) {
+      line.appendChild(el("strong", null, f));
+      line.appendChild(document.createTextNode(" on "));
+    }
+    var dup = ambiguousNames(b.order);
+    line.appendChild(linkRun(b.order.map(function (id) {
+      return function () {
+        return readerLink(id, b.of[id], b.of[id] === "effect" ? "eff" : null, dup);
+      };
+    }), 12, 0));
+    frag.appendChild(line);
+  });
+  return frag;
 }
 
 /* ---------------- what changed ---------------- */
@@ -4498,6 +5025,29 @@ function route() {
     return;
   }
 
+  var im = /^item\/(\d+)$/.exec(path);
+  if (im) {
+    var iid = parseInt(im[1], 10);
+    selected = "i" + iid;
+    detail.textContent = "";
+    detail.appendChild(el("div", "muted", "loading..."));
+    Promise.all([loadRecord("item", iid), classData(), propertyData()])
+      .then(function (res) {
+      PROPS = res[2] || {};
+      detail.textContent = "";
+      var rec = res[0];
+      if (!rec) {
+        detail.appendChild(el("div", "empty", "No item with id " + iid + "."));
+        return;
+      }
+      detail.appendChild(renderItem(rec, res[1]));
+      detail.scrollTop = 0;
+      document.title = rec.name + " - LOTRO Skills and Effects";
+    });
+    runSearch();
+    return;
+  }
+
   var cm = /^(class|trait)\/(\d+)$/.exec(path);
   if (cm) {
     var what = cm[1], cid = parseInt(cm[2], 10);
@@ -4506,13 +5056,19 @@ function route() {
     selected = (what === "class" ? "c" : "r") + cid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
+    // sourceClasses is what scopes a trait page to its own class. Without it
+    // SRC_CLASS is null, reachable() waves everything through, and a Warden
+    // trait's "what it scales" cell answers with Minstrel cries - but only
+    // when the trait page is the FIRST thing loaded, which is why this was
+    // easy to miss by clicking into it from a skill.
     var ctJobs = [classData(), modSources(), progressions(), itemSetData(),
-                  propertyData()];
+                  propertyData(), sourceClasses()];
     Promise.all(ctJobs).then(function (res) {
       var D = res[0], MS = res[1], progs = res[2];
       // a trait modifier can be scaled by a property an item set grants
       SETS = res[3] || {};
       PROPS = res[4] || {};
+      SRC_CLASS = res[5] || {};
       var rec = what === "class" ? D.classes[String(cid)] : D.traits[String(cid)];
       if (!rec) {
         detail.textContent = "";
@@ -4589,6 +5145,34 @@ function route() {
   runSearch();
 }
 
+/* 52,453 items would nearly double index.json, and index.json is downloaded
+   before anything is drawn. So the item half arrives separately, after the
+   first paint, and is merged in - a search run in the meantime simply has no
+   items in it yet, and is re-run once they land. The same trick searchText
+   already uses, for the same reason. */
+var ITEMS_IN = false;
+function loadItemIndex() {
+  if (ITEMS_IN) return Promise.resolve();
+  ITEMS_IN = true;
+  return getJSON(dataUrl("data/itemIndex.json")).then(function (rows) {
+    rows.forEach(function (e) { e.f = fold(e.n); e.q = squash(e.f); });
+    INDEX = INDEX.concat(rows);
+    BY_ID = null;           // rebuilt lazily, and now has the items in it
+    var sel = document.getElementById("fCat");
+    var seen = {};
+    Array.prototype.forEach.call(sel.options, function (o) { seen[o.value] = 1; });
+    var add = {};
+    rows.forEach(function (r) { if (r.c && !seen[r.c]) add[r.c] = 1; });
+    Object.keys(add).sort().forEach(function (c) {
+      var o = document.createElement("option");
+      o.value = c;
+      o.textContent = titleCase(c);
+      sel.appendChild(o);
+    });
+    runSearch();
+  }, function () { ITEMS_IN = false; });
+}
+
 /* ---------------- boot ---------------- */
 
 Promise.all([getJSON(dataUrl("data/meta.json")),
@@ -4620,6 +5204,7 @@ Promise.all([getJSON(dataUrl("data/meta.json")),
     migrateHash();
     runSearch();
     route();
+    loadItemIndex();
   })
   .catch(function (err) {
     document.getElementById("detail").innerHTML =
@@ -4656,7 +5241,7 @@ document.addEventListener("keydown", function (ev) {
   qbox.select();
 });
 ["fSkill", "fEffect", "fClass", "fTrait", "fTracery", "fEssence",
- "fSet"].forEach(function (id) {
+ "fSet", "fItem"].forEach(function (id) {
   var b = document.getElementById(id);
   b.onclick = function () {
     typeOn[b.dataset.t] = !typeOn[b.dataset.t];
