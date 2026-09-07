@@ -48,7 +48,9 @@
   --tip-desc: #cccc7f;
   --tip-damage: #c31c1f;
   --tip-cost: #00e500;
-  --tip-pip: #00e500;
+  /* a pip line is not the power cost - the client gives the class
+     resource its own yellow-green */
+  --tip-pip: #c3e81f;
   --tip-time: #009900;
   --tip-trait: #c1c1c1;
   --tip-resist: #c3b51f;
@@ -883,6 +885,23 @@ ul.links li.twoline {
 .tipeff.heal .tipeffdesc,
 .tipeff.heal .tl {
   color: var(--tip-cost);	
+}
+
+/* A vital line is built as a <span class="tv"> so its parts can be styled
+   separately, and .tip .tv beats the block rules above - which left "Restores
+   30% of maximum Morale" in the modifier grey inside a green heal block. The
+   line takes the colour of what it does, on a skill panel and on the effect's
+   own panel alike. */
+.tipeff.heal .tipstat .tv,
+.tip .tl.vital.heal,
+.tip .tl.vital.heal .tv {
+  color: var(--tip-cost);
+}
+
+.tipeff.harm .tipstat .tv,
+.tip .tl.vital.harm,
+.tip .tl.vital.harm .tv {
+  color: var(--tip-mods-harm);
 }
 
 .tip {

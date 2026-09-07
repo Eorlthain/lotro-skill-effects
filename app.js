@@ -134,6 +134,23 @@ function worldStateData() { return sideFile("worldStates"); }
 var WORLD_STATES = null;
 function displayTypeData() { return sideFile("displayTypes"); }
 
+/* An enum value arrives as its internal token name - "Fervor", "Magic" - and
+   the client prints something else: the log string on the enum's own mapper,
+   which is localised and British-spelt. normalize.py ships every one of those
+   that differs, keyed by the field the value lands in, so nothing here has to
+   know which enum a field came from and no word is spelled out in this file.
+   A field with no label, or a value the enum has no log string for, keeps the
+   name it arrived with. */
+var ENUM_LABELS = null;
+function enumLabelData() {
+  return sideFile("enumLabels").then(function (m) { ENUM_LABELS = m; return m; });
+}
+function enumWord(field, value) {
+  if (typeof value !== "string") return value;
+  var t = ENUM_LABELS && ENUM_LABELS[field];
+  return (t && t[value]) || value;
+}
+
 /* PropertyMetaData, as the client sees it: the label a tooltip prints for a
    game property and whether the number is a percentage. DISPLAY_TYPES is the
    same idea for the "Skill Type:" line. EFFECT_CACHE holds the few effect
@@ -1434,7 +1451,7 @@ function renderSkill(s, progs, D, MS, ET) {
       : null],
     ["Threat", s.threat],
     ["Pip change", s.pipChange],
-    ["Resist", s.resistCategory],
+    ["Resist", resistNames(s.resistCategory)],
     ["Traceries", usesGear(ownerClasses(s), D) ? skillTraceries(s, MS) : null, "wide"]
   ]));
 
@@ -1494,8 +1511,8 @@ function renderSkill(s, progs, D, MS, ET) {
         .filter(function (k) { return a[k]; })
         .map(function (k) { return k.replace("uses", ""); }).join(", ");
       tr.innerHTML = "<td>" + (i + 1) + "</td>" +
-        "<td>" + esc(a.damageQualifier || "-") + "</td>" +
-        "<td>" + esc(a.damageType || "-") + "</td>" +
+        "<td>" + esc(enumWord("damageQualifier", a.damageQualifier) || "-") + "</td>" +
+        "<td>" + esc(enumWord("damageType", a.damageType) || "-") + "</td>" +
         '<td class="num">' + fmt(a.damageModifier) + "</td>" +
         (hasMax ? '<td class="num">' + (a.damageMax !== undefined ? fmt(a.damageMax) :
           a.damageMaxProgression ? "progression " + a.damageMaxProgression : "-") + "</td>" : "") +
@@ -1667,7 +1684,7 @@ function renderEffect(e, progs, MS, D, ET) {
     ["Probability", (e.probability !== undefined && e.probability < 0.999)
       ? fmt(e.probability * 100, 1) + "%" : null],
     ["Chance granted by", chanceSource(e), "wide"],
-    ["Resist", e.resistCategory],
+    ["Resist", resistNames(e.resistCategory)],
     // Effects sharing an equivalence class do not stack with one another.
     // Naming the class was as far as this went; what a player is asking is
     // "so what else is in it", which is now one click away.
@@ -3127,7 +3144,9 @@ function ccLines(e) {
   var out = [];
   var dur = cc.duration !== undefined ? cc.duration : cc.variableDuration;
   cc.states.forEach(function (st) {
-    out.push(el("div", "tipstat", (dur ? secs(dur) + " " : "") + (CC_WORDS[st] || spaceWords(st))));
+    var word = ENUM_LABELS && ENUM_LABELS.ccStates && ENUM_LABELS.ccStates[st];
+    out.push(el("div", "tipstat",
+                (dur ? secs(dur) + " " : "") + (word || CC_WORDS[st] || spaceWords(st))));
     if (st === "ConjunctionStunned") {
       out.push(el("div", "tipstat", "Starts Fellowship Manoeuvre"));
     }
@@ -3176,11 +3195,17 @@ function auraWording(e) {
   return "Aura" + (bits.length ? " - " + bits.join(", ") : "");
 }
 
+/* One or several resist categories, in the client's own words. */
+function resistNames(cats) {
+  if (!cats) return null;
+  var word = function (c) { return titleCase(enumWord("resistCategory", c)); };
+  return Array.isArray(cats) ? cats.map(word).join(", ") : word(cats);
+}
+
 function resistWording(rec, level, withLevel) {
   var cats = rec.resistCategory;
   if (!cats) return null;
-  var named = Array.isArray(cats) ? cats.map(titleCase).join(", ")
-                                  : titleCase(cats);
+  var named = resistNames(cats);
   // The level belongs to the EFFECT's line only. A skill naming a resistance
   // category is saying what its effects can be resisted as, not carrying a
   // resist level of its own - Blinding Dust the skill reads "Resistance:
@@ -3197,6 +3222,51 @@ function tipLine(host, label, value, cls) {
   if (value && value.nodeType) d.appendChild(value);
   else d.appendChild(el("span", "tv", String(value)));
   host.appendChild(d);
+}
+
+/* What a skill does to your class resource, written the four ways the client
+   writes it. Skill_Pip_Change and Skill_Pip_RequiredMinValue decide between
+   them, and they are read together because neither says the whole thing:
+
+     change  min   reads as                          e.g.
+     +3      -     "Adds 3 to Fervour"               Heart Seeker (+5 Focus)
+     -3      3     "Cost: 3 Fervour"                 Brutal Strikes
+     -5      -     "Removes 5 from Fervour"          Fury of Blades
+     -4      5     "Requires at least 5 Fervour"     Ferocious Strikes
+                   "Removes 4 from Fervour"
+     -       1     "Cost: 1 Fervour"                 Hamstring
+
+   A cost is a spend the skill also gates on, so where the two numbers agree
+   the client says it once. Where they disagree it says both, because
+   "requires 5, spends 4" is two facts.
+
+   The resource is named by its own enum label, never by a table here -
+   Skill_Pip_AffectedType is what makes it Fervour rather than Focus. All of
+   these carry the "pip" class: a pip line sits in the cost block but is not
+   the power cost, and reads in its own yellow-green.
+
+   Skill_Pip_RequiredMaxValue (9 skills) is deliberately not printed: no
+   in-game panel has been seen for one, and its wording would be a guess. */
+function pipLines(host, s) {
+  var pip = s.pipType && spaceWords(enumWord("pipType", s.pipType));
+  if (!pip) return;
+  var chg = s.pipChange, min = s.pipMin;
+  if (chg > 0) {
+    tipLine(host, null, "Adds " + chg + " to " + pip, "pip");
+    return;
+  }
+  // A minimum with no change of its own is still a cost - Hamstring gates on
+  // 1 Fervour and takes it.
+  if (!chg) {
+    if (min) tipLine(host, "Cost:", min + " " + pip, "pip");
+    return;
+  }
+  var spend = Math.abs(chg);
+  if (min && min !== spend) {
+    tipLine(host, null, "Requires at least " + min + " " + pip, "pip");
+  }
+  if (min === spend) tipLine(host, "Cost:", spend + " " + pip, "pip");
+  else tipLine(host, null, "Removes " + spend + " from " + pip, "pip");
 }
 
 function tooltipPanel(s, progs, D, level) {
@@ -3254,7 +3324,13 @@ function tooltipPanel(s, progs, D, level) {
   // the client prints no "... Skill" line for it at all. Falling back to the
   // animation put "Ranged Skill" on 2,944 skills that have no combat category.
   if (qual) {
-    tipLine(top, null, titleCase(qual === "Magic" ? "Tactical" : qual) + " Skill");
+    // The enum's own label is the finished line - "Melee" labels as "Melee
+    // Skill" and "Magic" as "Tactical Skill" - so " Skill" is only appended
+    // when there is no label to use.
+    var qw = enumWord("damageQualifier", qual);
+    tipLine(top, null, qw === qual
+      ? titleCase(qual === "Magic" ? "Tactical" : qual) + " Skill"
+      : qw);
   }
   if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
   if (s.aeSphereRadius !== undefined) {
@@ -3320,6 +3396,7 @@ function tooltipPanel(s, progs, D, level) {
   (s.toggleCosts || []).forEach(function (c) {
     tipLine(foot, "Cost:", costText(c, " Per Second"));
   });
+  pipLines(foot, s);
   // The client prints "Toggle Skill" straight after the cost, and without it
   // nothing on the panel says the skill stays on once used. A non-empty
   // Skill_Toggle_Effect_List is exactly what marks one - 1,583 skills, and
@@ -3339,10 +3416,6 @@ function tooltipPanel(s, progs, D, level) {
     if (ga) foot.appendChild(ga);
   }
 
-  if (s.pipChange) {
-    var pipWord = PIP_WORDS[s.pipType] || (s.pipType ? titleCase(s.pipType) : "Pips");
-    tipLine(foot, pipWord + ":", (s.pipChange > 0 ? "+" : "") + s.pipChange, "pip");
-  }
   if (s.gambit) {
     var gr = gambitRow(s.gambit, "Requires");
     if (gr) foot.appendChild(gr);
@@ -3420,14 +3493,15 @@ function effectTooltip(e, progs, D, level) {
     var init = v.initial !== undefined ? v.initial
              : progAt(progs, v.initialProgression, level);
     var per = progAt(progs, v.perPulseProgression, level);
+    var vcls = isHeal(e) ? "vital heal" : (e.harmful ? "vital harm" : "vital");
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
                         e.pulseCount ? " on application" : "");
-    if (one) tipLine(body, null, one);
+    if (one) tipLine(body, null, one, vcls);
     if (e.pulseCount) {
       var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
                           " every " + fmt(e.interval || e.duration) + "s, " +
                           e.pulseCount + " times");
-      if (rep) tipLine(body, null, rep);
+      if (rep) tipLine(body, null, rep, vcls);
     }
   }
   // Resolve the curve at the chosen level. Without this the panel printed
@@ -3458,19 +3532,34 @@ function effectTooltip(e, progs, D, level) {
   return box;
 }
 
-/* One heal or damage-over-time line. When the effect carries a vitals-per-
-   second multiplier the stored curve is a coefficient on the character's own
-   healing or damage rate, not an amount - a heal-over-time curve reading 0.1
-   is 0.1 of V, not 0 morale. Those are written with V as the variable, the
+/* One heal or damage-over-time line. Two things stop the stored number from
+   being an amount, and both used to print as "Restores 0 Morale":
+
+   Effect_InstantVital_Multiplicative - the value is a FRACTION of the target's
+   maximum. Dire Need's 0.3 is "Restores 30% of maximum Morale", and 215
+   effects are written that way.
+
+   A vitals-per-second multiplier - the curve is a coefficient on the
+   character's own healing or damage rate, so a heal-over-time curve reading
+   0.1 is 0.1 of V, not 0 morale. Those are written with V as the variable, the
    same way skill damage is written with W and A. */
 function vitalLine(e, v, value, vps, variance, tail) {
   if (!value) return null;
   var harmful = e.harmful;
   var word = harmful ? "Deals" : "Restores";
-  var unit = e.vitalType === "Power" ? "Power" : (harmful ? "damage" : "Morale");
-  var type = e.damageType ? e.damageType + " " : "";
+  var vital = e.vitalType ? enumWord("vitalType", e.vitalType) : "Morale";
+  var unit = harmful && vital === "Morale" ? "damage" : vital;
+  var type = e.damageType ? enumWord("damageType", e.damageType) + " " : "";
   var span = el("span", "tv");
-  if (vps) {
+  if (v.percent && !vps) {
+    var maxOf = "% of maximum " + vital;
+    span.appendChild(el("span", null,
+      harmful
+        ? "Deals " + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
+          maxOf + " as " + type + "damage" + tail
+        : "Restores " + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
+          maxOf + tail));
+  } else if (vps) {
     var coef = Math.abs(value) * vps * (v.baseMultiplier || 1);
     span.appendChild(el("span", null, word + " "));
     span.appendChild(el("code", "dmg", fmt(coef, 2) + " x V"));
@@ -3736,8 +3825,6 @@ function usesLevel(e) {
 
 /* The client's word for a class resource - the Mariner calls Balance pips
    "Attunes", and the tooltip says so. */
-var PIP_WORDS = { Balance: "Attunes", Fervour: "Fervour", Focus: "Focus" };
-
 /* Each effect the skill puts up gets its own block, the way the game shows it:
    the effect's own wording, then one line per property it changes, named and
    formatted the way PropertyMetaData says, then the duration. */
@@ -3750,7 +3837,9 @@ function dispelWording(e, level) {
   if (!e.dispelCategories || !e.dispelCategories.length) return null;
   var n = e.dispelMax || 1;
   var out = "Removes up to " + n + " " +
-    e.dispelCategories.map(titleCase).join(", ") +
+    e.dispelCategories.map(function (c) {
+      return titleCase(enumWord("dispelCategories", c));
+    }).join(", ") +
     " effect" + (n === 1 ? "" : "s");
   // Effect_DispelByResist_StrengthRestrictionOffset is added to the caster's
   // LEVEL, so this number moves with the level box: at 160 the client writes
@@ -4129,7 +4218,8 @@ function damageExpr(a, progs, level) {
   }
   var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
            : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
-  var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
+  var lead = [enumWord("damageType", a.damageType) || null,
+              hand ? "(" + hand + ")" : null]
     .filter(Boolean).join(" ");
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
   var tail = [];
@@ -4148,7 +4238,8 @@ function flatDamage(a, value) {
   }
   var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
            : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
-  var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
+  var lead = [enumWord("damageType", a.damageType) || null,
+              hand ? "(" + hand + ")" : null]
     .filter(Boolean).join(" ");
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
   return span;
@@ -4304,7 +4395,8 @@ function renderTracery(t, D, MS, progs) {
   tbl.innerHTML = "<tr><th>Rarity</th><th>Gives</th><th>Available at</th></tr>";
   (t.rarities || []).forEach(function (r) {
     var tr = el("tr");
-    tr.appendChild(el("td", "rar-" + String(r.quality).toLowerCase(), r.quality));
+    tr.appendChild(el("td", "rar-" + String(r.quality).toLowerCase(),
+                      enumWord("quality", r.quality)));
 
     var td1 = el("td");
     (r.stats || []).forEach(function (st) {
@@ -4422,7 +4514,7 @@ function renderItem(it, D, MS, progs) {
   // rarity everywhere on the site
   if (it.quality) {
     tags.appendChild(el("span", "tag rar-" + String(it.quality).toLowerCase(),
-                        spaceWords(it.quality)));
+                        spaceWords(enumWord("quality", it.quality))));
   }
   (it.slots || []).forEach(function (sl) {
     tags.appendChild(el("span", "tag", spaceWords(sl)));
@@ -4439,7 +4531,7 @@ function renderItem(it, D, MS, progs) {
     var v = it.damageVariance || 0;
     dmg = v ? num(it.damage * (1 - v)) + " - " + num(it.damage * (1 + v))
             : num(it.damage);
-    if (it.damageType) dmg += " " + spaceWords(it.damageType);
+    if (it.damageType) dmg += " " + spaceWords(enumWord("damageType", it.damageType));
   }
   var bind = it.bind ? "Binds " + it.bind : (it.bindAccount ? "Bound to account" : null);
   if (bind && it.bindAccount && it.bind) bind += ", to your account";
@@ -4451,12 +4543,12 @@ function renderItem(it, D, MS, progs) {
     ["Armour", it.armour ? num(it.armour) : null],
     ["DPS", it.dps ? fmt(it.dps, 2) : null],
     ["Damage", dmg],
-    ["Speed", it.speed ? spaceWords(it.speed) : null],
-    ["Implement", it.implement ? spaceWords(it.implement) : null],
+    ["Speed", it.speed ? spaceWords(enumWord("speed", it.speed)) : null],
+    ["Implement", it.implement ? spaceWords(enumWord("implement", it.implement)) : null],
     ["Essence slots", it.sockets ? it.sockets.join(", ") : null],
     ["Binds", bind],
-    ["Material", it.material ? spaceWords(it.material) : null],
-    ["Durability", it.durability ? spaceWords(it.durability) : null],
+    ["Material", it.material ? spaceWords(enumWord("material", it.material)) : null],
+    ["Durability", it.durability ? spaceWords(enumWord("durability", it.durability)) : null],
     ["Cooldown", it.cooldown]
   ]));
 
@@ -5614,7 +5706,8 @@ function pending(a, img, id) {
 /* ---------------- boot ---------------- */
 
 Promise.all([getJSON(dataUrl("data/meta.json")),
-             getJSON(dataUrl("data/index.json"))])
+             getJSON(dataUrl("data/index.json")),
+             enumLabelData()])
   .then(function (r) {
     META = r[0];
     INDEX = r[1];
