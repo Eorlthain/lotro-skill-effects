@@ -92,7 +92,6 @@ error - and it writes what changed since the last build into
     data/searchText.json   description text, fetched only when someone searches
     data/properties.json   the client's own label for each game property
     data/changes.json      what this build changed since the previous one
-    data/snapshot.json     the fingerprints the next build diffs against
     data/meta.json         counts
     data/progressions.json every level-scaling curve
     data/classes.json      the 12 classes, their trained skills and class traits
@@ -101,7 +100,13 @@ error - and it writes what changed since the last build into
     data/traceries.json    traceries grouped by uniqueness channel, per rarity
     data/modSources.json   which traits, effects and traceries grant each
                            modifier property, and what reads it
+    data/itemIndex.json    the item half of the search index, written
+                           column-wise and fetched after the first paint
+    data/itemsets.json     gear and essence sets, their pieces and bonuses
     data/skill/<n>.json    curated skill records, bucket = id % 128
     data/effect/<n>.json   curated effect records
+    data/item/<n>.json     items - gear (slot, armour or damage, sockets,
+                           its own modifiers) and everything that grants an
+                           effect or a skill
     data/raw/...           pruned raw client properties, loaded on demand
     icons/<iconId>.png     icons exported from the DATs

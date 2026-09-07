@@ -126,6 +126,12 @@ var CHANNELS = null;
 var STACKING = null;
 var SETS = null;
 function propertyData() { return sideFile("properties"); }
+/* Which effects a world property switches on - the reverse of an effect's
+   "Put on you by world state" block. A world property is not a modifier
+   property, so without this its page said only "nothing grants or reads
+   this" and the link the effect page offers led nowhere. */
+function worldStateData() { return sideFile("worldStates"); }
+var WORLD_STATES = null;
 function displayTypeData() { return sideFile("displayTypes"); }
 
 /* PropertyMetaData, as the client sees it: the label a tooltip prints for a
@@ -442,9 +448,13 @@ function fmt(n, dp) {
        : s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
 
-/* Thousands separators, the way the game writes damage: 21,420. */
+/* A whole game number, written the way the game writes it: 7800, not 7,800.
+   These used to carry thousands separators, which is not what the client
+   does on a tooltip - "+7,800 Tactical Mitigation" should read "+7800". The
+   separators that remain are on COUNTS of records (the results total, the
+   sidebar tally), which are the site's own numbers rather than the game's. */
 function num(n) {
-  return typeof n === "number" ? Math.round(n).toLocaleString() : fmt(n);
+  return typeof n === "number" ? String(Math.round(n)) : fmt(n);
 }
 
 /* The client writes anything over a minute in minutes and seconds: 60s is
@@ -561,8 +571,78 @@ var TYPE_WORDS = {
   y: "y", tracery: "y", traceries: "y",
   z: "z", essence: "z", essences: "z",
   g: "g", set: "g", sets: "g",
+  // "i:" was missing while an Items filter button sat right there, so i:sword
+  // searched for the literal string "i:sword" and silently found nothing.
+  i: "i", item: "i", items: "i",
   p: "p", prop: "p", property: "p", properties: "p"
 };
+
+/* "p:" is not a type in the index - nothing in it has t === "p" - so every
+   property search returned nothing at all, quietly, while 3,294 property
+   pages sat in the sitemap with no way to reach them by name. The names live
+   in modSources.json, which the property page loads anyway. */
+var PROPNAMES = null;
+var PROPNAMES_STATE = "idle";
+function propertyNames() {
+  if (PROPNAMES) return PROPNAMES;
+  if (MODSRC) {
+    PROPNAMES = Object.keys(MODSRC).sort();
+    return PROPNAMES;
+  }
+  if (PROPNAMES_STATE === "idle") {
+    PROPNAMES_STATE = "loading";
+    modSources().then(function () { PROPNAMES_STATE = "ready"; runSearch(); });
+  }
+  return null;
+}
+
+function searchProperties(q) {
+  var box = document.getElementById("results");
+  var count = document.getElementById("count");
+  var names = propertyNames();
+  if (!names) {
+    box.textContent = "";
+    count.textContent = "loading properties...";
+    return;
+  }
+  var hits = [];
+  for (var i = 0; i < names.length; i++) {
+    var n = names[i];
+    if (!q) { hits.push([0, n]); continue; }
+    var sc = score(n, q, fold(n));
+    if (sc < 0) {
+      var sq = squash(fold(n)).indexOf(squash(q));
+      if (sq < 0) continue;
+      sc = 4 + sq / 100;
+    }
+    hits.push([sc, n]);
+  }
+  hits.sort(function (a, b) {
+    return a[0] !== b[0] ? a[0] - b[0] : a[1].localeCompare(b[1]);
+  });
+  var total = hits.length;
+  hits = hits.slice(0, 300);
+  box.textContent = "";
+  var frag = document.createDocumentFragment();
+  hits.forEach(function (pair) {
+    var row = el("a", "row");
+    row.href = propUrl(pair[1]);
+    var img = el("img");
+    img.src = iconUrl(0);
+    img.alt = "";
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    var txt = el("div", "txt");
+    txt.appendChild(el("div", "nm", pair[1]));
+    txt.appendChild(el("div", "mt", "Property"));
+    row.appendChild(img);
+    row.appendChild(txt);
+    frag.appendChild(row);
+  });
+  box.appendChild(frag);
+  CURSOR = -1;
+  count.textContent = total.toLocaleString() + " propert" +
+    (total === 1 ? "y" : "ies") + (total > 300 ? ", showing 300" : "");
+}
 
 /* An id can be typed either way round. Every page prints both forms in its
    header ("skill 1879049328 / 0x70000470"), and pasting either back into the
@@ -588,6 +668,10 @@ function runSearch() {
     raw = pref[2];
   }
   var q = fold(raw.trim());
+  if (typeWord === "p") {
+    searchProperties(q);
+    return;
+  }
   // Always worth trying, even when the query itself has no punctuation: the
   // point is to reach names that do. Only a query that is nothing but
   // punctuation has no squashed form to match with.
@@ -998,6 +1082,7 @@ function linkList(refs, kindGuess, subLine) {
     var a = el("a", null, meta ? meta.n : "#" + id);
     var kind = meta ? routeFor(meta.t) : kindGuess;
     a.href = urlFor("" + kind + "/" + id);
+    if (!meta) pending(a, img, id);
     if (meta && dup[meta.n]) a.appendChild(el("span", "idtag", "#" + id));
     body.appendChild(a);
     var bits = [];
@@ -1355,7 +1440,9 @@ function renderSkill(s, progs, D, MS, ET) {
 
   // what the skill does comes first; where it comes from is reference
   if (D) section(host, "How you get it", obtainedBlock(s, D));
-  section(host, "Granted by these items", itemSources(s));
+  // "Granted by" is the effect page's wording; on a skill an item can also be
+  // the thing that bars it, so the heading has to cover both.
+  section(host, "From these items", itemSources(s));
 
   section(host, "Area of effect", areaBlock(s));
   section(host, "Positional", positionalBlock(s));
@@ -1454,9 +1541,18 @@ function renderSkill(s, progs, D, MS, ET) {
     }
   });
 
-  if (s.combos) section(host, "Combos", linkList(s.combos.map(function (c) {
+  // Both directions. A combo is stored only on the skill that opens it, so
+  // without the reverse the far half of every chain looked like it combined
+  // with nothing - Desperate Shield and Desperate Fist said nothing about
+  // Desperate Spear, which is the only way into them.
+  if (s.combos) section(host, "Combos into", linkList(s.combos.map(function (c) {
     return { id: c.skill, via: c.mode };
   }), "skill"));
+  if (s.comboFrom) {
+    section(host, "Combos from", linkList(s.comboFrom.map(function (c) {
+      return { id: c.skill, via: c.mode };
+    }), "skill"));
+  }
 
   if (D && MS) section(host, "Effects with no chance of their own", chanceBlock(s, D, MS));
   if (D) section(host, "Effects that need a trait", conditionalBlock(s, D));
@@ -1575,7 +1671,11 @@ function renderEffect(e, progs, MS, D, ET) {
     // Effects sharing an equivalence class do not stack with one another.
     // Naming the class was as far as this went; what a player is asking is
     // "so what else is in it", which is now one click away.
-    ["Does not stack with", stackLink(e.equivalence, e.id), "wide"]
+    ["Does not stack with", stackLink(e.equivalence, e.id), "wide"],
+    // which rung of that class this one is: an Aegis - 1 and an Aegis - 5
+    // share a slot and are not interchangeable
+    ["Class priority", (e.equivalence && typeof e.classPriority === "number")
+      ? e.classPriority : null]
   ]));
 
   section(host, "Stat modifiers",
@@ -1778,6 +1878,7 @@ function refLink(id, kind, cls) {
   var a = el("a", cls, meta ? meta.n : "#" + id);
   a.href = urlFor("" + kind + "/" + id);
   a.title = kind + " " + id;
+  if (!meta) pending(a, null, id);
   return a;
 }
 
@@ -2331,8 +2432,18 @@ function renderTrait(t, D, MS, progs) {
         });
       });
     });
+    // Monster-play classes advance by RANK, not level, and 687 of the 982
+    // class trait entries carry no level at all - so every creep trait page
+    // read "Available to / Stalker / level undefined". A trained trait that
+    // also sits in a tree keeps the tree wording as well; overwriting it threw
+    // away the more useful half.
     var viaLevel = (c.traits || []).filter(function (e) { return e.id === t.id; })[0];
-    if (viaLevel) how = "level " + viaLevel.level;
+    if (viaLevel) {
+      var earned = viaLevel.level !== undefined ? "level " + viaLevel.level
+                 : viaLevel.rank !== undefined ? "rank " + viaLevel.rank
+                 : "trained";
+      how = how ? earned + ", " + how : earned;
+    }
     if (how) owners.push([c, how]);
   });
   if (owners.length) {
@@ -2970,6 +3081,83 @@ function vitalName(type) {
   return spaceWords(type);
 }
 
+/* Crowd control. The client gives it its own line on the panel - "5s Stun",
+   "15s Daze" - and nothing else on the effect says it, so a stun read as an
+   empty block and was dropped. The state names in the data are internal; these
+   are the words the client prints. 234 effects induce a state. */
+var CC_WORDS = {
+  Stunned: "Stun",
+  ConjunctionStunned: "Stun",
+  Stunned_Dread: "Stun",
+  Dazed: "Daze",
+  Rooted: "Root",
+  Feared: "Fear",
+  KnockedDown: "Knockdown",
+  KnockedOut: "Knockout",
+  FullDisable: "Disable",
+  Kneeling: "Kneel",
+  Immune: "Immunity",
+  MonsterInvulnerability: "Invulnerability"
+};
+
+/* What breaks the state, where the effect itself does not override it. The
+   defaults belong to the combat-state resource, which is not in this dataset,
+   so they are recorded here from the client's own panels:
+
+     Riddle              Dazed   100% on damage, and no harm line at all
+     Invocation of       Feared  100% on harm, 3% on damage
+       Elbereth
+     Shadow Breath       Feared  the same 100% on harm, its own 50% on damage
+
+   A stun never breaks, so it needs no entry. Rooted is deliberately absent:
+   nine roots override the damage chance and print their own number, and one
+   that does not print no break line, which is better than a guessed default.
+   An effect's own override wins per channel - Shadow Breath keeps the fear's
+   100% on harm while replacing the 3% on damage. */
+var CC_BREAK_DEFAULT = {
+  Dazed:  { damage: 1 },
+  Feared: { harm: 1, damage: 0.03 }
+};
+
+/* A Conjunction Stunned is what opens a Fellowship Manoeuvre, and the client
+   says so on its own line under the stun. */
+function ccLines(e) {
+  var cc = e.cc;
+  if (!cc || !(cc.states || []).length) return [];
+  var out = [];
+  var dur = cc.duration !== undefined ? cc.duration : cc.variableDuration;
+  cc.states.forEach(function (st) {
+    out.push(el("div", "tipstat", (dur ? secs(dur) + " " : "") + (CC_WORDS[st] || spaceWords(st))));
+    if (st === "ConjunctionStunned") {
+      out.push(el("div", "tipstat", "Starts Fellowship Manoeuvre"));
+    }
+    // "after 1s" is the grace period: the state cannot be broken at all until
+    // it has run that long. Riddle's is 0, so its line is the bare chance.
+    var after = cc.grace ? " after " + secs(cc.grace) : "";
+    var def = CC_BREAK_DEFAULT[st] || {};
+    var harm = cc.breakOnSkill !== undefined ? cc.breakOnSkill : def.harm;
+    if (harm) {
+      out.push(el("div", "tipstat",
+                  fmt(harm * 100, 0) + "% break chance on harm" + after));
+    }
+    var dmg = cc.breakOnDamage !== undefined ? cc.breakOnDamage : def.damage;
+    if (dmg) {
+      out.push(el("div", "tipstat",
+                  fmt(dmg * 100, 0) + "% break chance on damage" + after));
+    }
+  });
+  return out;
+}
+
+/* Effect_Duration_CombatOnly. Such an effect carries no duration of its own:
+   it holds for as long as you are fighting and drops once you have been out
+   of combat for the client's grace period. That period is a global - nothing
+   on the effect carries it - so it is named here. 2,818 effects set the flag. */
+var COMBAT_ONLY_GRACE = 9;
+function combatOnlyNote() {
+  return "Expires if out of combat for " + COMBAT_ONLY_GRACE + " seconds.";
+}
+
 /* "Resistance: Song (160)". Effect_Resist_Level is 0 on almost every effect
    that names a category, and the number the client shows there is the
    caster's level - so it follows the panel's level box. */
@@ -3226,6 +3414,7 @@ function effectTooltip(e, progs, D, level) {
   });
 
   var body = el("div", "tipbody");
+  ccLines(e).forEach(function (n) { body.appendChild(n); });
   var v = e.vital;
   if (v) {
     var init = v.initial !== undefined ? v.initial
@@ -3239,9 +3428,6 @@ function effectTooltip(e, progs, D, level) {
                           " every " + fmt(e.interval || e.duration) + "s, " +
                           e.pulseCount + " times");
       if (rep) tipLine(body, null, rep);
-    }
-    if (v.critMultiplier && v.critMultiplier !== 1) {
-      tipLine(body, null, "Critical multiplier x" + fmt(v.critMultiplier));
     }
   }
   // Resolve the curve at the chosen level. Without this the panel printed
@@ -3260,7 +3446,8 @@ function effectTooltip(e, progs, D, level) {
   // permanent wins: such an effect still carries an interval, and printing
   // that as its duration says it lasts a second when it never expires
   if (e.permanent) {
-    tipLine(foot, "Duration:", "permanent", "time");
+    if (e.combatOnly) tipLine(foot, null, combatOnlyNote(), "time");
+    else tipLine(foot, "Duration:", "permanent", "time");
   } else if (e.pulseCount && e.interval) {
     tipLine(foot, "Duration:", secs(e.interval * e.pulseCount) +
       "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)", "time");
@@ -3617,10 +3804,24 @@ function carrierLines(e) {
   return null;
 }
 
-/* What one effect contributes to a panel block: its own sentence, then a line
-   per property it changes, then how long it lasts. Returns how many lines it
-   put up, so a caller can drop a block that turned out to say nothing. */
-function effectBody(blk, e, ref, progs, level, noName) {
+/* Every line an effect puts on a skill panel links back to the effect, so the
+   panel can drop its NAME and its description sentence and still be a way in.
+   The client's panel is the applied values - "+20% Skill Crit Chance", not
+   "Provocateur / Grants a critical chance bonus on your next skill play." */
+function tipEffLink(node, id) {
+  var a = el("a", "tipefflink");
+  a.href = urlFor("effect/" + id);
+  a.appendChild(node);
+  return a;
+}
+
+/* What one effect contributes to a panel block: a line per property it
+   changes, then how long it lasts. The effect's name and description are
+   deliberately not printed - see tipEffLink. The description is the one
+   fallback: where an effect changes no property at all that sentence is the
+   whole of what it does, and without it the block would be empty. Returns how
+   many lines it put up, so a caller can drop a block that said nothing. */
+function effectBody(blk, e, ref, progs, level) {
   var before = blk.children.length;
   var dispel = dispelWording(e, level);
   if (dispel) {
@@ -3634,18 +3835,7 @@ function effectBody(blk, e, ref, progs, level, noName) {
     blk.appendChild(dl);
     return blk.children.length - before;
   }
-  var named = false;
-  if (!noName && !blk.children.length) {
-    var head = el("a", "tipeffname", e.name);
-    head.href = urlFor("effect/" + e.id);
-    blk.appendChild(head);
-    named = true;
-  }
-  if (e.applied || e.descOverride) {
-    var d = el("div", "tipeffdesc");
-    d.appendChild(richText(e.applied || e.descOverride));
-    blk.appendChild(d);
-  }
+  var lines = ccLines(e);
   // What it does to your morale or power. Only the effect's OWN panel used to
   // print this, so a heal skill's tooltip - Chord of Salvation, Raise the
   // Spirit - never said how much it heals, and the block was dropped for
@@ -3656,27 +3846,39 @@ function effectBody(blk, e, ref, progs, level, noName) {
              : progAt(progs, v.initialProgression, level);
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
                         e.pulseCount ? " on application" : "");
-    if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); blk.appendChild(vl); }
+    if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); lines.push(vl); }
     if (e.pulseCount) {
       var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
                           v.vpsPerPulse, v.perPulseVariance,
                           " every " + fmt(e.interval || e.duration) + "s, " +
                           e.pulseCount + " times");
-      if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); blk.appendChild(vr); }
+      if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); lines.push(vr); }
     }
   }
   (e.stats || []).forEach(function (st) {
     var line = statLine(resolveStat(st, progs, level), "level");
-    if (line) blk.appendChild(line);
+    if (line) lines.push(line);
   });
+  // Only where there is no value at all: 1,649 effects suppress every modifier
+  // line they carry, and for those the sentence IS the effect.
+  if (!lines.length) {
+    var text = e.applied || e.descOverride;
+    if (text) {
+      var d = multiLine("tipeffdesc", text);
+      if (d) lines.push(d);
+    }
+  }
+  // A duration on its own says nothing without the line it belongs to.
+  if (!lines.length) return 0;
   var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
   if (dur !== undefined && dur > 0) {
-    blk.appendChild(el("div", "tipdur", "Duration: " + secs(dur)));
+    lines.push(el("div", "tipdur", "Duration: " + secs(dur)));
   } else if (e.permanent) {
-    blk.appendChild(el("div", "tipdur", "Duration: permanent"));
+    lines.push(el("div", "tipdur",
+                  e.combatOnly ? combatOnlyNote() : "Duration: permanent"));
   }
-  // A block that is only the effect's own name says nothing at all.
-  return blk.children.length - before - (named ? 1 : 0);
+  lines.forEach(function (n) { blk.appendChild(tipEffLink(n, e.id)); });
+  return blk.children.length - before;
 }
 
 function effectBlocks(s, progs, level) {
@@ -3712,7 +3914,7 @@ function effectBlocks(s, progs, level) {
         if (!ne) return;
         // A carrier is only a wrapper, so what it hands on decides the colour.
         if (isHeal(ne)) blk.className += " heal";
-        effectBody(host, ne, null, progs, level, true);
+        effectBody(host, ne, null, progs, level);
       });
       if (host.children.length) {
         blk.appendChild(el("div", "tipeffwho", carrier.header));
@@ -3758,11 +3960,8 @@ function statAmount(st, meta, signed) {
   }
   if (st.op === "Subtract") n = -Math.abs(n);
   var shown = signed ? n : Math.abs(n);
-  // "+1,200 Fate", the way the client writes it - a bare 1200 reads as a
-  // different order of magnitude at a glance
-  var out = (!suffix && Math.abs(shown) >= 1000 && Number.isInteger(shown))
-    ? shown.toLocaleString()
-    : fmt(shown, 1).replace(/\.0$/, "");
+  // No thousands separator: the client writes "+7800 Tactical Mitigation".
+  var out = fmt(shown, 1).replace(/\.0$/, "");
   if (signed && shown > 0) out = "+" + out;
   return out + suffix;
 }
@@ -3846,10 +4045,11 @@ function statLine(st, xLabel) {
     }
     return null;
   }
-  if (v === 0 && (st.modifiedBy || []).length) {
-    // the value is nil until something grants it - the game still lists it
-    return el("div", "tipstat cond", (said || name) + "  (when traited)");
-  }
+  // A modifier whose value is nil until something else grants it used to print
+  // a grey "<name>  (when traited)" line. The panel shows the skill as it is
+  // with nothing traited, so there is no number and nothing to say: it falls
+  // through to the zero case below, which keeps a custom wording and drops a
+  // bare property name.
   if (v === 0) {
     // A zero is often just a carrier for the wording. Muscle Memory's entire
     // effect is a Mod_DescriptionOverride hung on a 0 to Stat_Will - "Using
@@ -3861,31 +4061,6 @@ function statLine(st, xLabel) {
   }
   var line = said ? multiLine("tipstat", said)
                   : el("div", "tipstat", statAmount(st, meta, true) + " " + name);
-  return line ? withTraitNote(line, st) : null;
-}
-
-/* A modifier can be improved by a property something else grants, and where
-   that something is a TRAIT the reader can go and take it - Suppression's
-   debuff grows by up to 2% with ranks in the Suppression trait, and nothing
-   on the panel said so. Only trait sources are named: an item set or another
-   effect is not a choice the reader makes here, and 1,636 modifier lines
-   carry one of those against 445 that carry a trait. */
-function withTraitNote(line, st) {
-  var props = st.modifiedBy || [];
-  if (!props.length || !MODSRC) return line;
-  var names = [], seen = {};
-  props.forEach(function (p) {
-    ((MODSRC[p] || {}).traits || []).forEach(function (id) {
-      var meta = nameOf(id);
-      if (!meta || seen[meta.n]) return;
-      seen[meta.n] = 1;
-      names.push(meta.n);
-    });
-  });
-  if (!names.length) return line;
-  var shown = names.slice(0, 3).join(", ") +
-    (names.length > 3 ? " and " + (names.length - 3) + " more" : "");
-  line.appendChild(el("span", "tipimp", " improved by " + shown));
   return line;
 }
 
@@ -3959,7 +4134,6 @@ function damageExpr(a, progs, level) {
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
   var tail = [];
   if (cap) tail.push("max " + num(cap));
-  if (a.critMultiplier) tail.push("crit x" + fmt(a.critMultiplier));
   if (tail.length) span.appendChild(el("span", "muted", "  " + tail.join(", ")));
   return span;
 }
@@ -3977,9 +4151,6 @@ function flatDamage(a, value) {
   var lead = [a.damageType || null, hand ? "(" + hand + ")" : null]
     .filter(Boolean).join(" ");
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
-  if (a.critMultiplier) {
-    span.appendChild(el("span", "muted", "  crit x" + fmt(a.critMultiplier)));
-  }
   return span;
 }
 
@@ -4202,7 +4373,34 @@ function renderTracery(t, D, MS, progs) {
 /* An item page, kept to the one question this database answers about an item:
    what does it put on you. Nothing about where it drops or what it sells for -
    an item is here because it is the answer to "what applies that effect". */
-function renderItem(it, D) {
+/* Classes are named by their internal code on an item ("Runekeeper"), which
+   is the same spelling the trait trees use. */
+function classByCode(code, D) {
+  if (!D || !D.classes) return null;
+  var keys = Object.keys(D.classes);
+  for (var i = 0; i < keys.length; i++) {
+    if (D.classes[keys[i]].code === code) return D.classes[keys[i]];
+  }
+  return null;
+}
+
+function classRun(codes, D) {
+  var run = el("span");
+  (codes || []).forEach(function (code, i) {
+    if (i) run.appendChild(document.createTextNode(", "));
+    var c = classByCode(code, D);
+    if (!c) { run.appendChild(document.createTextNode(spaceWords(code))); return; }
+    var a = el("a", null, c.name);
+    a.href = urlFor("class/" + c.id);
+    run.appendChild(a);
+  });
+  return run.childNodes.length ? run : null;
+}
+
+/* An item page. Until the extractor learned the four equipment classes this
+   was a name, an icon and a category - the whole gear half of the game was
+   missing, which is also why a set could not link its own pieces. */
+function renderItem(it, D, MS, progs) {
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -4212,21 +4410,87 @@ function renderItem(it, D) {
   head.appendChild(img);
   var h = el("div");
   h.appendChild(el("h2", null, it.name));
-  h.appendChild(el("div", "id", "item " + it.id));
+  h.appendChild(el("div", "id", "item " + it.id + "  /  0x" +
+                   it.id.toString(16).toUpperCase()));
   head.appendChild(h);
   host.appendChild(head);
 
   var tags = el("div", "tags");
   tags.appendChild(el("span", "tag kind", "Item"));
   if (it.category) tags.appendChild(el("span", "tag", spaceWords(it.category)));
-  if (it.quality) tags.appendChild(el("span", "tag", spaceWords(it.quality)));
+  // the same quality tokens the tracery tables use, so one colour is one
+  // rarity everywhere on the site
+  if (it.quality) {
+    tags.appendChild(el("span", "tag rar-" + String(it.quality).toLowerCase(),
+                        spaceWords(it.quality)));
+  }
+  (it.slots || []).forEach(function (sl) {
+    tags.appendChild(el("span", "tag", spaceWords(sl)));
+  });
+  if (it.consumed) tags.appendChild(el("span", "tag", "Consumed on use"));
   host.appendChild(tags);
+
+  if (it.desc) host.appendChild(richPara("desc", it.desc));
+
+  // Damage is stored as an average and a spread: 33.96 at 0.25 is the client's
+  // "25.5 - 42.5 Common Damage".
+  var dmg = null;
+  if (it.damage) {
+    var v = it.damageVariance || 0;
+    dmg = v ? num(it.damage * (1 - v)) + " - " + num(it.damage * (1 + v))
+            : num(it.damage);
+    if (it.damageType) dmg += " " + spaceWords(it.damageType);
+  }
+  var bind = it.bind ? "Binds " + it.bind : (it.bindAccount ? "Bound to account" : null);
+  if (bind && it.bindAccount && it.bind) bind += ", to your account";
 
   section(host, "At a glance", statRow([
     ["Item level", it.itemLevel],
     ["Requires level", it.minLevel],
+    ["Requires", classRun(it.requiresClass, D), "wide"],
+    ["Armour", it.armour ? num(it.armour) : null],
+    ["DPS", it.dps ? fmt(it.dps, 2) : null],
+    ["Damage", dmg],
+    ["Speed", it.speed ? spaceWords(it.speed) : null],
+    ["Implement", it.implement ? spaceWords(it.implement) : null],
+    ["Essence slots", it.sockets ? it.sockets.join(", ") : null],
+    ["Binds", bind],
+    ["Material", it.material ? spaceWords(it.material) : null],
+    ["Durability", it.durability ? spaceWords(it.durability) : null],
     ["Cooldown", it.cooldown]
   ]));
+
+  // Which set it belongs to - the reverse of the set page's own piece list,
+  // and the answer to "what is the rest of this armour worth".
+  if (it.set) {
+    var st = SETS && SETS[String(it.set)];
+    var sul = el("ul", "links");
+    var li = el("li");
+    var si = el("img");
+    si.src = iconUrl(st ? st.icon : 0);
+    si.alt = "";
+    si.onerror = function () { this.style.visibility = "hidden"; };
+    li.appendChild(si);
+    var sbody = el("div");
+    var sa = el("a", null, st ? st.name : "#" + it.set);
+    sa.href = urlFor("set/" + it.set);
+    sbody.appendChild(sa);
+    if (st && (st.members || []).length) {
+      sbody.appendChild(el("span", "via", st.members.length + " pieces"));
+    }
+    li.appendChild(sbody);
+    sul.appendChild(li);
+    section(host, "Part of this set", sul);
+  }
+
+  // The item's own Mod_Array: 77,075 items carry one, and it is the same shape
+  // a trait or an effect uses, so every property links to its own page and the
+  // curve resolves at the reader's item level.
+  if (MS) {
+    section(host, "What it grants",
+            grantsBlock(it.stats, MS, progs || {}, "Item level", D,
+                        freepClasses(D)));
+  }
 
   [["onUse", "What it does when used"],
    ["whileEquipped", "While it is equipped"],
@@ -4275,10 +4539,19 @@ function worldStateSources(rec) {
         ? "is between " + fmt(r.floor === undefined ? 0 : r.floor) +
           " and " + fmt(r.ceiling === undefined ? 0 : r.ceiling)
         : "changes";
+    // Which world property. It comes from the response map that pairs this
+    // callback with a world event; a few callbacks are driven by more than
+    // one, and naming them all beats naming none.
+    var props = r.properties && r.properties.length ? r.properties
+              : (r.property ? [r.property] : []);
     var line = el("span", "summon");
-    if (r.property) {
+    if (props.length) {
       line.appendChild(document.createTextNode("While "));
-      line.appendChild(propCode(r.property));
+      props.forEach(function (name, i) {
+        if (i) line.appendChild(document.createTextNode(i === props.length - 1
+          ? " or " : ", "));
+        line.appendChild(propCode(name));
+      });
       line.appendChild(document.createTextNode(" " + when));
     } else {
       line.appendChild(document.createTextNode("While a world property " + when));
@@ -4354,10 +4627,21 @@ function modGrantSources(rec) {
 function itemSources(rec) {
   if (!rec.fromItems || !rec.fromItems.length) return null;
   var WORDS = { onUse: "on use", whileEquipped: "while equipped",
-                hotspot: "from its hotspot" };
+                hotspot: "from its hotspot", grantsSkill: "grants it",
+                usesSkill: "uses it", mountSkillShort: "on a short steed",
+                mountSkillTall: "on a tall steed", barsSkill: "bars it" };
+  // One item can relate to a skill twice - a skill scroll grants it and then
+  // bars itself once you know it - so the item is named once carrying both.
+  var order = [], seen = {};
+  rec.fromItems.forEach(function (row) {
+    var k = String(row[0]);
+    if (!seen[k]) { seen[k] = []; order.push(row[0]); }
+    var word = WORDS[row[1]] || row[1];
+    if (seen[k].indexOf(word) === -1) seen[k].push(word);
+  });
   var box = el("div");
-  box.appendChild(linkList(rec.fromItems.map(function (row) {
-    return { id: row[0], via: WORDS[row[1]] || row[1] };
+  box.appendChild(linkList(order.map(function (id) {
+    return { id: id, via: seen[String(id)].join(", ") };
   }), "item"));
   if (rec.fromItemsMore) {
     box.appendChild(el("p", "muted", "and " + rec.fromItemsMore +
@@ -4439,13 +4723,11 @@ function renderSet(st, D, MS, progs) {
   section(host, "What those properties affect",
           grantsBlock(allStats, MS, progs, "Item level", D, freepClasses(D)));
 
-  // items are not in the index, so the pieces are listed by id
+  // The pieces. These were printed as bare ids, because the item extraction
+  // was IItem only and 10,583 of the 10,607 member ids across every set - all
+  // the armour, weapons and jewellery - had no record to name. They do now.
   if ((st.members || []).length) {
-    var run = el("div", "muted");
-    run.appendChild(linkRun(st.members.map(function (iid) {
-      return function () { return el("span", "band", String(iid)); };
-    }), 12, 0));
-    section(host, "Pieces", run);
+    section(host, "Pieces", linkList(st.members, "item"));
   }
   return host;
 }
@@ -4568,6 +4850,19 @@ function buildPrefsUI() {
    with 52 members is a list nobody reads in a stat cell. */
 var STACK_LIST_MAX = 10;
 
+/* A stacking group ships as [id, class priority, 1 if it guards the class].
+   Older builds wrote bare ids, so both shapes are read. */
+function stackRows(group) {
+  return (group || []).map(function (row) {
+    return (row && row.length !== undefined)
+      ? { id: row[0], pri: row[1], guard: !!row[2] }
+      : { id: row, pri: null, guard: false };
+  });
+}
+function stackIds(group) {
+  return stackRows(group).map(function (r) { return r.id; });
+}
+
 function stackLink(name, selfId) {
   if (!name) return null;
   var group = STACKING && STACKING[name];
@@ -4583,7 +4878,7 @@ function stackLink(name, selfId) {
   var a = el("a", "stacklink");
   a.href = stackUrl(name);
   a.appendChild(document.createTextNode(spaceWords(name)));
-  var others = group.filter(function (id) { return id !== selfId; });
+  var others = stackIds(group).filter(function (id) { return id !== selfId; });
   if (group.length >= STACK_LIST_MAX || !others.length) {
     var rest = group.length - (others.length === group.length ? 0 : 1);
     // a real space, not a CSS gap - this text gets read and copied
@@ -4612,6 +4907,7 @@ function stackLink(name, selfId) {
    class but never say what else was in it, because effects are sharded 128
    ways and finding the rest meant fetching all of them. */
 function renderStacking(name, group) {
+  var rows = stackRows(group);
   var host = el("div");
   var head = el("div", "head");
   var h = el("div");
@@ -4620,25 +4916,69 @@ function renderStacking(name, group) {
   head.appendChild(h);
   host.appendChild(head);
 
+  var ranked = false, first = null, guards = 0;
+  rows.forEach(function (r) {
+    if (r.guard) guards++;
+    if (typeof r.pri !== "number") return;
+    if (first === null) first = r.pri;
+    else if (r.pri !== first) ranked = true;
+  });
+
   var tags = el("div", "tags");
   tags.appendChild(el("span", "tag kind", "Stacking group"));
-  tags.appendChild(el("span", "tag", group.length + " effects"));
+  tags.appendChild(el("span", "tag", rows.length + " effects"));
+  if (ranked) tags.appendChild(el("span", "tag", "Ranked by priority"));
   host.appendChild(tags);
 
+  // The old wording said a second application simply replaces the first,
+  // which reads as a disarm overwriting the immunity to disarm sitting in the
+  // same class. The class is a slot; Effect_ClassPriority decides who holds
+  // it, and a protection effect in the list is not competing for it at all.
   host.appendChild(el("p", "desc",
-    "These share an equivalence class, so only one of them is ever on a "
-    + "target at a time - applying a second replaces the first rather than "
-    + "adding to it."));
+    "These all carry the equivalence class " + name + ", so a target holds "
+    + "one of them at a time" + (ranked
+      ? " - and which one is settled by the priority beside each name, not by "
+        + "whichever landed last. A lower priority does not displace a higher "
+        + "one; equal priorities take the slot from each other."
+      : ". Every member here is at the same priority, so a second application "
+        + "takes the slot from the first.")));
+  if (guards) {
+    host.appendChild(el("p", "desc",
+      (guards === 1 ? "One effect here is" : guards + " effects here are")
+      + " marked as protection against this class: while "
+      + (guards === 1 ? "it is" : "one of them is") + " on a target, effects "
+      + "of this class do not land at all, rather than replacing anything."));
+  }
 
-  section(host, "In this group", linkList(group, "effect"));
+  var t = el("table", "t");
+  t.innerHTML = "<tr><th>Effect</th>" + (ranked ? "<th>Priority</th>" : "") +
+                "<th>Kind</th><th></th></tr>";
+  var dup = ambiguousNames(rows.map(function (r) { return r.id; }));
+  rows.forEach(function (r) {
+    var meta = nameOf(r.id);
+    var tr = el("tr");
+    var td = el("td");
+    var a = el("a", null, meta ? meta.n : "#" + r.id);
+    a.href = urlFor("effect/" + r.id);
+    if (!meta) pending(a, null, r.id);
+    if (meta && dup[meta.n]) a.appendChild(el("span", "idtag", "#" + r.id));
+    td.appendChild(a);
+    tr.appendChild(td);
+    if (ranked) {
+      tr.appendChild(el("td", "num",
+        typeof r.pri === "number" ? String(r.pri) : "-"));
+    }
+    // the record itself is a shard away; the index carries neither duration
+    // nor kind, so this column is filled in by the effect page it links to
+    tr.appendChild(el("td", "muted", meta && meta.c ? titleCase(meta.c) : ""));
+    tr.appendChild(el("td", "muted",
+      r.guard ? "blocks the whole class while it is up" : ""));
+    t.appendChild(tr);
+  });
+  section(host, "In this group", t);
   return host;
 }
 
-/* ---------------- property pages ---------------- */
-
-/* modSources.json already indexed all 3,194 properties in every direction -
-   what grants each one and what reads it - but the only way in was sideways
-   from a skill that happened to mention it. This is that index, addressable. */
 function renderProperty(prop, MS, D) {
   var meta = PROPS && PROPS[prop];
   var host = el("div");
@@ -4657,10 +4997,52 @@ function renderProperty(prop, MS, D) {
   if (!meta) tags.appendChild(el("span", "tag", "No client label"));
   host.appendChild(tags);
 
+  // A world property is watched rather than granted, so this comes first and
+  // may be the whole page.
+  var watched = WORLD_STATES && WORLD_STATES[prop];
+  if (watched) {
+    var wl = el("ul", "links");
+    (watched.effects || []).forEach(function (row) {
+      var meta = nameOf(row.effect);
+      var li = el("li");
+      var wi = el("img");
+      wi.src = iconUrl(meta ? meta.k : 0);
+      wi.alt = "";
+      wi.onerror = function () { this.style.visibility = "hidden"; };
+      li.appendChild(wi);
+      var wb = el("div");
+      var wa = el("a", null, meta ? meta.n : "#" + row.effect);
+      wa.href = urlFor("effect/" + row.effect);
+      if (!meta) pending(wa, wi, row.effect);
+      wb.appendChild(wa);
+      var bits = [];
+      if (row.floor !== undefined && row.floor === row.ceiling) {
+        bits.push("reads " + fmt(row.floor));
+      } else if (row.floor !== undefined || row.ceiling !== undefined) {
+        bits.push("between " + fmt(row.floor === undefined ? 0 : row.floor) +
+                  " and " + fmt(row.ceiling === undefined ? 0 : row.ceiling));
+      }
+      if (row.filters && row.filters.length) {
+        bits.push((row.filters.map(function (f) {
+          return SIDE_WORDS[f] || spaceWords(f);
+        })).join(", "));
+      }
+      if (bits.length) wb.appendChild(el("span", "via", bits.join("  ")));
+      li.appendChild(wb);
+      wl.appendChild(li);
+    });
+    section(host, "Applies these while it holds a value", wl);
+    if (watched.more) {
+      host.appendChild(el("p", "muted", "and " + watched.more + " more"));
+    }
+  }
+
   var src = (MS && MS[prop]) || null;
   if (!src) {
-    host.appendChild(el("p", "muted",
-      "Nothing in this dataset grants or reads this property."));
+    if (!watched) {
+      host.appendChild(el("p", "muted",
+        "Nothing in this dataset grants or reads this property."));
+    }
     return host;
   }
 
@@ -4846,14 +5228,14 @@ function renderChanges(ch) {
         body.appendChild(el("span", null, row[1] || ("#" + id)));
       }
       if (kind === "renamed") {
-        body.appendChild(el("span", "via", "was " + row[1]));
+        // the block above built the "added" shape; a rename needs the new name
+        // as the link and the old one beside it
         body.textContent = "";
-        var a2 = el("a", null, row[2]);
-        a2.href = urlFor("skill/" + id);
         var meta2 = nameOf(id);
-        if (meta2) a2.href = urlFor(routeFor(meta2.t) + "/" + id);
+        var a2 = el("a", null, row[2]);
+        a2.href = urlFor((meta2 ? routeFor(meta2.t) : "skill") + "/" + id);
         body.appendChild(a2);
-        body.appendChild(el("span", "via", "was “" + row[1] + "”"));
+        body.appendChild(el("span", "via", 'was "' + row[1] + '"'));
       }
       li.appendChild(body);
       ul.appendChild(li);
@@ -4953,11 +5335,12 @@ function route() {
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
     Promise.all([modSources(), classData(), propertyData(), sourceClasses(),
-                 itemSetData()])
+                 itemSetData(), worldStateData()])
       .then(function (res) {
         PROPS = res[2] || {};
         SRC_CLASS = res[3] || {};
         SETS = res[4] || {};
+        WORLD_STATES = res[5] || {};
         detail.textContent = "";
         detail.appendChild(renderProperty(prop, res[0], res[1]));
         document.title = prop + " - LOTRO Skills and Effects";
@@ -5005,8 +5388,11 @@ function route() {
     selected = "g" + sid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
+    // A set page IS its pieces, so this is the one route that waits for the
+    // item index rather than naming them late - six raw ids where the content
+    // should be is worse than a moment more of "loading...".
     Promise.all([itemSetData(), classData(), modSources(), sourceClasses(),
-                 propertyData(), progressions()])
+                 propertyData(), progressions(), loadItemIndex()])
       .then(function (res) {
         SETS = res[0] || {};
         SRC_CLASS = res[3] || {};
@@ -5031,16 +5417,19 @@ function route() {
     selected = "i" + iid;
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
-    Promise.all([loadRecord("item", iid), classData(), propertyData()])
+    Promise.all([loadRecord("item", iid), classData(), propertyData(),
+                 modSources(), progressions(), itemSetData(), sourceClasses()])
       .then(function (res) {
       PROPS = res[2] || {};
+      SETS = res[5] || {};
+      SRC_CLASS = res[6] || {};
       detail.textContent = "";
       var rec = res[0];
       if (!rec) {
         detail.appendChild(el("div", "empty", "No item with id " + iid + "."));
         return;
       }
-      detail.appendChild(renderItem(rec, res[1]));
+      detail.appendChild(renderItem(rec, res[1], res[3], res[4]));
       detail.scrollTop = 0;
       document.title = rec.name + " - LOTRO Skills and Effects";
     });
@@ -5145,32 +5534,81 @@ function route() {
   runSearch();
 }
 
-/* 52,453 items would nearly double index.json, and index.json is downloaded
-   before anything is drawn. So the item half arrives separately, after the
-   first paint, and is merged in - a search run in the meantime simply has no
-   items in it yet, and is re-run once they land. The same trick searchText
-   already uses, for the same reason. */
+/* Items are their own index, fetched after the first paint and merged in -
+   they would more than double index.json, which is downloaded before anything
+   is drawn. A search run in the meantime simply has no items in it yet and is
+   re-run once they land. The same trick searchText already uses.
+
+   MERGED, not concatenated. Every essence and tracery used to be in both
+   files, and since nameOf() rebuilt its id map front to back the item entry
+   won: 1,624 records silently changed type the moment this landed, so an
+   essence appeared twice in the results, a property page called it a tracery,
+   and isGearSource() stopped recognising it. normalize.py no longer emits the
+   duplicates; this keeps the richer record whatever the data does.
+
+   The file is written column-wise - a category table plus [id, name, category
+   index, icon] per row - because 99,459 copies of the same six keys is most of
+   a megabyte of nothing. */
 var ITEMS_IN = false;
 function loadItemIndex() {
   if (ITEMS_IN) return Promise.resolve();
   ITEMS_IN = true;
-  return getJSON(dataUrl("data/itemIndex.json")).then(function (rows) {
-    rows.forEach(function (e) { e.f = fold(e.n); e.q = squash(e.f); });
-    INDEX = INDEX.concat(rows);
-    BY_ID = null;           // rebuilt lazily, and now has the items in it
+  return getJSON(dataUrl("data/itemIndex.json")).then(function (blob) {
+    var cats = (blob && blob.c) || [];
+    var rows = (blob && blob.r) || blob || [];
+    nameOf(0);                       // force BY_ID to exist before we test it
+    var add = [];
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      var e = row && row.length !== undefined && row.i === undefined
+        ? { i: row[0], n: row[1], t: "i", c: cats[row[2]] || "Item",
+            k: row[3] || 0, h: 0 }
+        : row;
+      // an id index.json already names is that record, not an item
+      if (BY_ID && BY_ID[e.i]) continue;
+      e.f = fold(e.n);
+      e.q = squash(e.f);
+      add.push(e);
+      if (BY_ID) BY_ID[e.i] = e;
+    }
+    INDEX = INDEX.concat(add);
     var sel = document.getElementById("fCat");
     var seen = {};
     Array.prototype.forEach.call(sel.options, function (o) { seen[o.value] = 1; });
-    var add = {};
-    rows.forEach(function (r) { if (r.c && !seen[r.c]) add[r.c] = 1; });
-    Object.keys(add).sort().forEach(function (c) {
+    var extra = {};
+    add.forEach(function (r) { if (r.c && !seen[r.c]) extra[r.c] = 1; });
+    Object.keys(extra).sort().forEach(function (c) {
       var o = document.createElement("option");
       o.value = c;
       o.textContent = titleCase(c);
       sel.appendChild(o);
     });
+    nameLatecomers();
     runSearch();
   }, function () { ITEMS_IN = false; });
+}
+
+/* A page is drawn as soon as its own data is in hand, and the item index is
+   several megabytes behind it - so a skill that hands you an item drew the
+   link as "#1879216028". Rather than make every page wait for a file most of
+   them do not need, the links that could not be named say which id they are
+   waiting for, and are filled in when it arrives. */
+function nameLatecomers() {
+  var pend = document.querySelectorAll("[data-nameid]");
+  for (var i = 0; i < pend.length; i++) {
+    var node = pend[i];
+    var meta = nameOf(parseInt(node.getAttribute("data-nameid"), 10));
+    if (!meta) continue;
+    node.removeAttribute("data-nameid");
+    if (node.tagName === "IMG") node.src = iconUrl(meta.k);
+    else node.textContent = meta.n;
+  }
+}
+
+/* Mark a link (and its icon) as still waiting for a name. */
+function pending(a, img, id) {
+  a.setAttribute("data-nameid", id);
+  if (img) img.setAttribute("data-nameid", id);
 }
 
 /* ---------------- boot ---------------- */
@@ -5189,6 +5627,7 @@ Promise.all([getJSON(dataUrl("data/meta.json")),
        (META.traits || 0).toLocaleString() + " traits",
        (META.traceries || 0).toLocaleString() + " traceries",
        (META.essences || 0).toLocaleString() + " essences",
+       (META.items || 0).toLocaleString() + " items",
        (META.sets || 0).toLocaleString() + " sets",
        ((META.classes || 0) + (META.creepClasses || 0)) + " classes"].join(", ");
     var cats = {};

@@ -1,554 +1,1435 @@
 /* LOTRO skill and effect database */
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&display=swap');
 :root {
+  /* page */
   --bg: #14110d;
   --surface: #1c1813;
-  --surface-2: #241f18;
-  --surface-3: #2d2820;
+  --surface-2: #252019;
+  --surface-3: #2e281f;
+
+  /* lines */
   --border: #3a3227;
   --border-strong: #514532;
+
+  /* text */
   --ink: #ece4d4;
   --ink-2: #b3a894;
-  --ink-3: #857c6c;
+  --ink-3: #81796b;
+
+  /* LOTRO gold */
   --accent: #d8a94b;
   --accent-dim: #8f7331;
-  --link: #e3bc6d;
+  --link: #dfb968;
+
   --good: #86b06b;
   --bad: #d0705f;
   --info: #6fa3c4;
-  --radius: 6px;
+
+  --radius: 2px;
+
   --mono: ui-monospace, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* item rarity */
+  --rar-uncommon: #e8e14a;
+  --rar-rare: #d07fe0;
+  --rar-incomparable: #00ffff;
+  --rar-legendary: #ffa500;
+
+  /* tooltip */
+  --tip-bg: #080c13;
+  --tip-bg-mid: #0e1522;
+  --tip-bg-low: #162137;
+  --tip-border: #959595;
+
+  --tip-name: #c3b585;
+  --tip-stat: #666666;
+  --tip-desc: #cccc7f;
+  --tip-damage: #c31c1f;
+  --tip-cost: #00e500;
+  --tip-pip: #00e500;
+  --tip-time: #009900;
+  --tip-trait: #c1c1c1;
+  --tip-resist: #c3b51f;
+  --tip-mods: #00e500;
+  --tip-mods-harm: #ff0000;
+  --prose-amt: #cccc7f;
+
+  /* trait tooltip */
+  --tt-flavour: #c3b51f;
+  --tt-class: #2ab51f;
+  --tt-rank: #009900;
+  --tt-value: #99ff00;
+  --tt-earned: #ff00ff;
+  --tt-name: #c3b585;
+  --tt-require: #ff0000;
+
+  --tcell: 108px;
 }
 
-* { box-sizing: border-box; }
-html, body { height: 100%; }
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 14px/1.55 var(--sans);
+  font: 14px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-a { color: var(--link); text-decoration: none; }
-a:hover { text-decoration: underline; }
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
 
 /* ---------- layout ---------- */
-/* dvh, not vh: on a phone vh counts the space the browser's own chrome is
-   sitting in, so the last rows of the list were always under the toolbar */
-.app { display: grid; grid-template-columns: 360px 1fr; height: 100dvh; }
+
+.app {
+  display: grid;
+  grid-template-columns: 315px 1fr;
+  height: 100dvh;
+}
+
 @media (max-width: 900px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
-  /* Search takes the screen until something is picked, and then gets out of
-     the way - a permanent 45% split left too little of either. */
-  .sidebar { max-height: 60dvh; }
-  .app.reading .sidebar { max-height: 34dvh; }
-  .app.reading .prefs, .app.reading .filters { display: none; }
-  .detail { padding: 16px 14px 48px; }
-  .head h2 { font-size: 20px; }
-  table.t { font-size: 12.5px; }
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
+    max-height: 60dvh;
+  }
+
+  .app.reading .sidebar {
+    max-height: 34dvh;
+  }
+
+  .app.reading .prefs,
+  .app.reading .filters {
+    display: none;
+  }
+
+  .detail {
+    padding: 16px 14px 48px;
+  }
+
+  .head h2 {
+    font-size: 20px;
+  }
+
+  table.t {
+    font-size: 12.5px;
+  }
 }
 
 .sidebar {
   border-right: 1px solid var(--border);
   background: var(--surface);
-  display: flex; flex-direction: column; min-height: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
+
 .brand {
-  padding: 14px 16px 10px;
+  padding: 14px 15px 10px;
   border-bottom: 1px solid var(--border);
 }
-.brand .brandname {
-  margin: 0; font: 600 17px/1.2 var(--serif);
-  letter-spacing: .02em; color: var(--accent);
-}
-/* the heading a prerendered page leads with, before the app replaces it */
-#landing h1 {
-  margin: 0 0 6px; font: 600 22px/1.2 var(--serif); color: var(--accent);
-}
-.brand .sub { color: var(--ink-3); font-size: 11.5px; margin-top: 3px; }
 
-.controls { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.brand .brandname {
+  margin: 0;
+  font: 600 17px/1.2 var(--serif);
+  color: var(--accent);
+}
+
+#landing h1 {
+  margin: 0 0 6px;
+  font: 600 22px/1.2 var(--serif);
+  color: var(--accent);
+}
+
+.brand .sub {
+  color: var(--ink-3);
+  font-size: 11.5px;
+  margin-top: 3px;
+}
+
+.controls {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--border);
+}
+
 .search {
-  width: 100%; padding: 9px 11px;
-  background: var(--bg); color: var(--ink);
-  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
   font: 14px var(--sans);
 }
-.search:focus { outline: none; border-color: var(--accent-dim); }
-.filters { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-.filters select, .filters button {
-  background: var(--surface-2); color: var(--ink-2);
-  border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 5px 8px; font: 12px var(--sans); cursor: pointer;
-}
-.filters button.on { background: var(--accent-dim); color: #1a1610; border-color: var(--accent); }
-.count { color: var(--ink-3); font-size: 11.5px; margin-top: 8px; }
 
-.results { overflow-y: auto; flex: 1; min-height: 0; }
+.search:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.filters {
+  display: flex;
+  gap: 5px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+
+.filters select,
+.filters button {
+  background: var(--surface-2);
+  color: var(--ink-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 5px 7px;
+  font: 12px var(--sans);
+  cursor: pointer;
+}
+
+.filters select:hover,
+.filters button:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+.filters button.on {
+  background: var(--accent-dim);
+  color: #1a1610;
+  border-color: var(--accent);
+}
+
+.count {
+  color: var(--ink-3);
+  font-size: 11px;
+  margin-top: 7px;
+}
+
+.results {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
 .row {
-  display: flex; gap: 9px; align-items: center;
-  padding: 6px 12px; cursor: pointer; border-left: 3px solid transparent;
-  color: inherit; text-decoration: none;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 10px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  color: inherit;
 }
-.row:hover { background: var(--surface-2); text-decoration: none; }
-.row.sel { background: var(--surface-3); border-left-color: var(--accent); }
-/* where the arrow keys are, as distinct from what is open */
-.row.cur { background: var(--surface-2); border-left-color: var(--accent-dim); }
+
+.row:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+
+.row.sel {
+  background: var(--surface-3);
+  border-left-color: var(--accent);
+}
+
+.row.cur {
+  background: var(--surface-2);
+  border-left-color: var(--accent-dim);
+}
+
 .resgroup {
-  font: 600 10.5px var(--sans); letter-spacing: .08em; text-transform: uppercase;
-  color: var(--ink-3); padding: 12px 12px 4px; border-top: 1px solid var(--border);
-  margin-top: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ink-3);
+  padding: 11px 11px 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 5px;
 }
-.row img { width: 28px; height: 28px; border-radius: 3px; background: var(--surface-3); flex: none; }
-.row .nm { font-size: 13px; line-height: 1.25; }
-.row .mt { font-size: 11px; color: var(--ink-3); }
-.row .txt { min-width: 0; }
-.row .nm, .row .mt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row img {
+  width: 27px;
+  height: 27px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  flex: none;
+}
+
+.row .nm {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.row .mt {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.row .txt {
+  min-width: 0;
+}
+
+.row .nm,
+.row .mt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 
 /* ---------- detail ---------- */
-.detail { overflow-y: auto; padding: 22px 28px 60px; min-width: 0; }
-.empty { color: var(--ink-3); max-width: 560px; margin-top: 40px; }
-.empty h2 { font: 600 20px var(--serif); color: var(--ink-2); }
 
-.head { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 6px; }
-.head img { width: 52px; height: 52px; border-radius: 5px; border: 1px solid var(--border-strong); background: var(--surface-2); }
-.head h2 { margin: 0; font: 600 24px/1.15 var(--serif); color: var(--accent); }
-.head .id { font: 11.5px var(--mono); color: var(--ink-3); margin-top: 4px; }
-.tags { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 16px; }
-.tag {
-  font-size: 11px; padding: 2px 8px; border-radius: 99px;
-  background: var(--surface-2); border: 1px solid var(--border); color: var(--ink-2);
+.detail {
+  overflow-y: auto;
+  padding: 21px 27px 58px;
+  min-width: 0;
 }
-.tag.harm { border-color: #6a3a33; color: var(--bad); }
-.tag.help { border-color: #45602f; color: var(--good); }
-.tag.kind { border-color: var(--accent-dim); color: var(--accent); }
+
+.empty {
+  color: var(--ink-3);
+  max-width: 560px;
+  margin-top: 38px;
+}
+
+.empty h2 {
+  font: 600 20px var(--serif);
+  color: var(--ink-2);
+}
+
+.head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 5px;
+}
+
+.head img {
+  width: 50px;
+  height: 50px;
+  border-radius: 2px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+}
+
+.head h2 {
+  margin: 0;
+  font: 600 24px/1.15 var(--serif);
+  color: var(--accent);
+}
+
+.head .id {
+  font: 11px var(--mono);
+  color: var(--ink-3);
+  margin-top: 4px;
+}
+
+.tags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin: 7px 0 15px;
+}
+
+.tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--ink-2);
+}
+
+.tag.harm {
+  border-color: #6a3a33;
+  color: var(--bad);
+}
+
+.tag.help {
+  border-color: #45602f;
+  color: var(--good);
+}
+
+.tag.kind {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
 
 .desc {
-  font: italic 15px/1.6 var(--serif); color: var(--ink);
-  border-left: 2px solid var(--accent-dim); padding-left: 14px; margin: 0 0 20px;
+  font: italic 15px/1.6 var(--serif);
+  color: var(--ink);
+  border-left: 2px solid var(--accent-dim);
+  padding-left: 13px;
+  margin: 0 0 19px;
   max-width: 70ch;
 }
 
 h3.sec {
-  font: 600 12px var(--sans); letter-spacing: .09em; text-transform: uppercase;
-  color: var(--ink-3); margin: 26px 0 10px;
-  border-bottom: 1px solid var(--border); padding-bottom: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+  margin: 24px 0 9px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
 }
 
-.stats { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ---------- stats ---------- */
+
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .stat {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 8px 13px; min-width: 104px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 7px 12px;
+  min-width: 102px;
 }
-.stat .k { font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
-.stat .v { font: 600 17px var(--mono); color: var(--ink); margin-top: 2px; }
-/* a stat cell holding a run of links rather than one number */
-.stat.wide { flex-basis: 100%; }
-.stat.wide .v { font: 400 13px var(--sans); line-height: 1.55; }
 
-table.t { border-collapse: collapse; width: 100%; max-width: 900px; font-size: 13px; }
+.stat .k {
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.stat .v {
+  font: 600 17px var(--mono);
+  color: var(--ink);
+  margin-top: 2px;
+}
+
+.stat.wide {
+  flex-basis: 100%;
+}
+
+.stat.wide .v {
+  font: 400 13px var(--sans);
+  line-height: 1.55;
+}
+
+
+/* ---------- tables ---------- */
+
+table.t {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 900px;
+  font-size: 13px;
+}
+
 table.t th {
-  text-align: left; font: 600 11px var(--sans); letter-spacing: .06em;
-  text-transform: uppercase; color: var(--ink-3);
-  border-bottom: 1px solid var(--border); padding: 6px 10px 6px 0;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 10px 6px 0;
 }
-table.t td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--surface-3); vertical-align: top; }
-table.t td.num { font-family: var(--mono); }
 
-ul.links { list-style: none; margin: 0; padding: 0; }
-ul.links li { padding: 4px 0; display: flex; gap: 8px; align-items: center; }
-ul.links img { width: 22px; height: 22px; border-radius: 3px; background: var(--surface-2); }
-ul.links .via { color: var(--ink-3); font: 11px var(--mono); margin-left: 8px; }
+table.t td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--surface-3);
+  vertical-align: top;
+}
 
-.chart { margin: 6px 0 4px; }
-.chart svg { display: block; overflow: visible; }
-.chart .grid { stroke: var(--border); stroke-width: 1; }
-.chart .axis { stroke: var(--border-strong); stroke-width: 1; }
-.chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
-.chart .lbl { fill: var(--ink-3); font: 10.5px var(--mono); }
-.chart .cross { stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2 3; }
-.chart .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
-.chart .tip { fill: var(--ink); font: 11.5px var(--mono); }
+table.t tbody tr:hover {
+  background: rgba(255, 255, 255, .018);
+}
 
-details.raw { margin-top: 10px; }
-details.raw summary { cursor: pointer; color: var(--ink-2); font-size: 12.5px; padding: 6px 0; }
+table.t td.num {
+  font-family: var(--mono);
+}
+
+
+/* ---------- links ---------- */
+
+ul.links {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+ul.links li {
+  padding: 4px 0;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+ul.links img {
+  width: 22px;
+  height: 22px;
+  border-radius: 2px;
+  background: var(--surface-2);
+}
+
+ul.links .via {
+  color: var(--ink-3);
+  font: 11px var(--mono);
+  margin-left: 7px;
+}
+
+ul.links.plain li {
+  padding-left: 0;
+}
+
+ul.links.plain .summon {
+  color: var(--tip-name);
+}
+
+a.more {
+  font-size: 11.5px;
+  color: var(--link);
+  white-space: nowrap;
+}
+
+a.more:hover {
+  color: var(--accent);
+}
+
+a.trc {
+  color: #c9a0dc;
+}
+
+a.ess {
+  color: #86b06b;
+}
+
+.band {
+  font: 11.5px var(--mono);
+  color: var(--ink-2);
+  border-bottom: 1px dotted var(--border-strong);
+}
+
+
+/* ---------- charts ---------- */
+
+.chart {
+  margin: 6px 0 4px;
+}
+
+.chart svg {
+  display: block;
+  overflow: visible;
+}
+
+.chart .grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart .axis {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+
+.chart .line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.chart .lbl {
+  fill: var(--ink-3);
+  font: 10.5px var(--mono);
+}
+
+.chart .cross {
+  stroke: var(--ink-3);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.chart .dot {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.chart .tip {
+  fill: var(--ink);
+  font: 11.5px var(--mono);
+}
+
+
+/* ---------- raw data ---------- */
+
+details.raw {
+  margin-top: 9px;
+}
+
+details.raw summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  padding: 5px 0;
+}
+
+details.raw summary:hover {
+  color: var(--accent);
+}
+
 pre.raw {
-  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 12px 14px; overflow-x: auto; font: 11.5px/1.5 var(--mono);
-  color: var(--ink-2); max-height: 620px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 11px 13px;
+  overflow-x: auto;
+  font: 11.5px/1.5 var(--mono);
+  color: var(--ink-2);
+  max-height: 620px;
 }
-code.pn { font: 11.5px var(--mono); color: var(--info); }
-.muted { color: var(--ink-3); }
+
+code.pn {
+  font: 11.5px var(--mono);
+  color: var(--info);
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+
+/* ---------- navigation ---------- */
+
+.brand .navlink {
+  display: inline-block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--link);
+  border-bottom: 1px dotted var(--accent-dim);
+}
+
+.brand .navlink:hover {
+  text-decoration: none;
+  color: var(--accent);
+}
+
+.navlinks {
+  display: flex;
+  gap: 11px;
+  flex-wrap: wrap;
+}
+
 
 /* ---------- classes ---------- */
-.brand .navlink {
-  display: inline-block; margin-top: 6px; font-size: 12px;
-  color: var(--link); border-bottom: 1px dotted var(--accent-dim);
-}
-.brand .navlink:hover { text-decoration: none; color: var(--accent); }
 
 a.classcard {
-  display: flex; gap: 10px; align-items: center;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); padding: 9px 13px; min-width: 190px;
-  color: var(--ink); text-decoration: none;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 8px 12px;
+  min-width: 190px;
+  color: var(--ink);
+  text-decoration: none;
 }
-a.classcard:hover { border-color: var(--accent-dim); background: var(--surface-2); }
-a.classcard img { width: 34px; height: 34px; border-radius: 4px; background: var(--surface-3); }
-a.classcard .cn { font: 600 15px var(--serif); color: var(--accent); }
-a.classcard .mt { font-size: 11.5px; color: var(--ink-3); }
 
-.branch { margin: 0 0 18px; }
+a.classcard:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+
+a.classcard img {
+  width: 33px;
+  height: 33px;
+  border-radius: 3px;
+  background: var(--surface-3);
+}
+
+a.classcard .cn {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+a.classcard .mt {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.branch {
+  margin: 0 0 17px;
+}
+
 .branch .bn {
-  font: 600 13px var(--serif); color: var(--accent); letter-spacing: .03em;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
   margin-bottom: 2px;
 }
-.branch .muted { font-size: 12px; margin-bottom: 6px; max-width: 70ch; }
+
+.branch .muted {
+  font-size: 12px;
+  margin-bottom: 6px;
+  max-width: 70ch;
+}
+
 table.t img.inline {
-  width: 20px; height: 20px; border-radius: 3px; vertical-align: -5px;
-  margin-right: 7px; background: var(--surface-2);
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
+  vertical-align: -5px;
+  margin-right: 7px;
+  background: var(--surface-2);
 }
 
-/* "Effects applied to the Fellowship within 15 metres:" - the audience line
-   above a carried effect, dimmer than what it introduces. */
-.tip .tipeffwho { font-size: 11.5px; color: var(--tip-time); }
-.tip .tipeff .dispel { text-decoration: none; display: block; }
-.tip .tipeff .tipstat.heal { color: var(--tip-cost); }
-a.eff { color: var(--info); }
-/* Distinct records that share a display name - six effects are called
-   "Healing" - carry their id so a run of them is not one name repeated. */
-.idtag { margin-left: 4px; font: 10px var(--mono); color: var(--ink-3); opacity: .75; }
-/* A property's readers, grouped by the class that can reach them. */
-.propgroup { margin: 0 0 12px; }
-.propgrouphead {
-  display: flex; align-items: center; gap: 6px; margin-bottom: 3px;
-  font: 600 12px var(--sans);
-}
-.propgrouphead img.inline { width: 16px; height: 16px; }
-.propgrouphead .via { margin-left: 4px; font: 11px var(--mono); color: var(--ink-3); }
-.propgroup .proprun { margin-left: 22px; }
-/* a hotspot has no page, so its row carries no link affordance */
-ul.links.plain li { padding-left: 0; }
-ul.links.plain .summon { color: var(--tip-name); }
-table.t td .via { margin-left: 8px; }
 
-.setbonus { margin: 8px 0 0 14px; padding-left: 12px; border-left: 1px solid var(--border); }
-.setbonus .sbh {
-  font: 600 11px var(--sans); letter-spacing: .07em; text-transform: uppercase;
-  color: var(--ink-3); margin-bottom: 2px;
-}
-a.more { font-size: 11.5px; color: var(--link); white-space: nowrap; }
-a.more:hover { color: var(--accent); }
+/* ---------- effects and properties ---------- */
 
-a.trc { color: #c9a0dc; }
-.band { font: 11.5px var(--mono); color: var(--ink-2); border-bottom: 1px dotted var(--border-strong); }
-/* Item quality colours, as the game uses them. Kept as tokens so a single
-   line changes each one everywhere it appears. */
-/* The game paints these on a pale tooltip. On this near-black ground the
-   stock purple is about 1.9:1 against the background - legible as a shape,
-   not as text - so rare and uncommon are lifted to the same hues at a
-   readable lightness. The others already pass. */
-:root {
-  --rar-uncommon:     #e8e14a;
-  --rar-rare:         #d07fe0;
-  --rar-incomparable: #00FFFF;
-  --rar-legendary:    #FFA500;
-}
-td.rar-uncommon     { color: var(--rar-uncommon); }
-td.rar-rare         { color: var(--rar-rare); }
-td.rar-incomparable { color: var(--rar-incomparable); }
-td.rar-legendary    { color: var(--rar-legendary); }
-td[class^="rar-"]   { font-weight: 600; }
-
-ul.links li.twoline { align-items: flex-start; }
-.trline { font-size: 11.5px; margin-top: 1px; }
-
-a.ess { color: #86b06b; }
-
-.tag.slot { border-color: var(--accent-dim); color: var(--ink); }
-
-/* Gambit sequence: builder icons in press order, the way the in-game tooltip
-   shows "Requires:" on a Warden or Burglar finisher. */
-/* A gambit as the client draws it: the green label, then the builder icons in
-   press order, packed together with no names and no arrows between them. */
-.gambit { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; margin: 1px 0; }
-.gambit .gl { font-size: 12px; color: var(--tip-cost); margin-right: 3px; }
-.gambit .gstep {
-  display: inline-flex; line-height: 0; text-decoration: none;
-  border: 1px solid #6a6250; border-radius: 2px;
-}
-.gambit .gstep:hover { border-color: var(--accent); }
-.gambit .gstep img { width: 18px; height: 18px; display: block; }
-
-/* Skill and effect tooltips, rebuilt from the client's own layout.
-   UILayout 0x22000000, element Skill_ExamineLayout, holds an auto-resize
-   listbox whose UICore_ListBox_entry_templates name the rows in order, and
-   each row's UICore_Text_font_colors gives the colour below. The panel is
-   229px wide there at 1024x768, scaled up here to stay readable. */
-/* The layout's stored UICore_Text_font_colors are the shipped defaults, and the
-   live client does not use all of them - it paints the header, description and
-   damage rows near-white where the layout says #666666 and #7FCCCC. The cost,
-   pip and cooldown greens DO match what the game draws, so those are taken
-   from the layout verbatim; the rest follow the client. */
-:root {
-  /* The panel is not black: it is a dark navy that lifts down the box, which
-     is what makes a #666666 header legible in game. Sampled top to bottom. */
-  --tip-bg: #080C13;
-  --tip-bg-mid: #0E1522;
-  --tip-bg-low: #162137;
-  --tip-border: #959595;
-  --tip-name: #C3B585;        /* the title */
-  --tip-stat: #666666;        /* range, skill type, the header block */
-  --tip-desc: #CCCC7F;        /* the flavour text */
-  --tip-damage: #C31C1F;      /* "16,492 - 20,615 Frost Damage" */
-  --tip-cost: #00E500;        /* "Cost: 135 Power", "Toggle Skill" */
-  --tip-pip: #00E500;
-  --tip-time: #009900;        /* "Duration:", "Cooldown:" */
-  --tip-trait: #c1c1c1;
-  /* Sampled off the Timeless Echoes of Battle tooltip. It had been entered
-     byte-reversed - #1FB5C3, a blue - which is how a gold line came out cyan. */
-  --tip-resist: #C3B51F;      /* Effect_ResistanceCategory_Base */
-  --tip-mods: #00E500;        /* what a BENEFICIAL effect changes */
-  --tip-mods-harm: #FF0000;   /* what a HARMFUL one does to its target */
-  --prose-amt: #CCCC7F;       /* a number in the page's own prose, not a tip */
+.tip .tipeffwho {
+  font-size: 11.5px;
+  color: var(--tip-time);
 }
 
-/* Sampled off in-game screenshots (Wizard's Frost, Forced March) rather than
-   read off the UI layout resource - the layout's stored colours are shipped
-   defaults the live client does not all use. */
-/* A beneficial effect's content is one colour and a harmful one's is another,
-   whichever line it arrives on - the effect's own wording as much as the
-   modifier lines under it. */
-.tip.harm .tipstat, .tipeff.harm .tipstat,
-.tip.harm .tipeffdesc, .tipeff.harm .tipeffdesc { color: var(--tip-mods-harm); }
-.tipeff .tipeffdesc { color: var(--tip-mods); }
-/* Anything that restores you reads in the cost green. That is the same value
-   as --tip-mods, because ALL beneficial effect content is #00E500 - the rule
-   is kept separate only so a restoring effect stays green if the two ever
-   part company. The audience line and the duration keep their dimmer green. */
-.tipeff.heal .tipstat, .tipeff.heal .tipeffdesc, .tipeff.heal .tl {
+.tip .tipeff .dispel {
+  text-decoration: none;
+  display: block;
+}
+
+.tip .tipeff .tipstat.heal {
   color: var(--tip-cost);
 }
 
+a.eff {
+  color: var(--info);
+}
+
+.idtag {
+  margin-left: 4px;
+  font: 10px var(--mono);
+  color: var(--ink-3);
+  opacity: .75;
+}
+
+.propgroup {
+  margin: 0 0 12px;
+}
+
+.propgrouphead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.propgrouphead img.inline {
+  width: 16px;
+  height: 16px;
+}
+
+.propgrouphead .via {
+  margin-left: 4px;
+  font: 11px var(--mono);
+  color: var(--ink-3);
+}
+
+.propgroup .proprun {
+  margin-left: 22px;
+}
+
+table.t td .via {
+  margin-left: 8px;
+}
+
+
+/* ---------- item sets ---------- */
+
+.setbonus {
+  margin: 8px 0 0 14px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.setbonus .sbh {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+  margin-bottom: 2px;
+}
+
+
+/* ---------- item rarity ---------- */
+
+td.rar-uncommon {
+  color: var(--rar-uncommon);
+}
+
+td.rar-rare {
+  color: var(--rar-rare);
+}
+
+td.rar-incomparable {
+  color: var(--rar-incomparable);
+}
+
+td.rar-legendary {
+  color: var(--rar-legendary);
+}
+
+td[class^="rar-"] {
+  font-weight: 600;
+}
+
+.tag.rar-uncommon {
+  color: var(--rar-uncommon);
+  border-color: var(--rar-uncommon);
+}
+
+.tag.rar-rare {
+  color: var(--rar-rare);
+  border-color: var(--rar-rare);
+}
+
+.tag.rar-incomparable {
+  color: var(--rar-incomparable);
+  border-color: var(--rar-incomparable);
+}
+
+.tag.rar-legendary {
+  color: var(--rar-legendary);
+  border-color: var(--rar-legendary);
+}
+
+
+/* ---------- item details ---------- */
+
+ul.links li.twoline {
+  align-items: flex-start;
+}
+
+.trline {
+  font-size: 11.5px;
+  margin-top: 1px;
+}
+
+.tag.slot {
+  border-color: var(--accent-dim);
+  color: var(--ink);
+}
+
+
+/* ---------- gambits ---------- */
+
+.gambit {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin: 1px 0;
+}
+
+.gambit .gl {
+  font-size: 12px;
+  color: var(--tip-cost);
+  margin-right: 3px;
+}
+
+.gambit .gstep {
+  display: inline-flex;
+  line-height: 0;
+  text-decoration: none;
+  border: 1px solid #6a6250;
+  border-radius: 2px;
+}
+
+.gambit .gstep:hover {
+  border-color: var(--accent);
+}
+
+.gambit .gstep img {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+
+/* ---------- skill and effect tooltips ---------- */
+
+.tip.harm .tipstat,
+.tipeff.harm .tipstat,
+.tip.harm .tipeffdesc,
+.tipeff.harm .tipeffdesc {
+  color: var(--tip-mods-harm);
+}
+
+.tipeff .tipeffdesc {
+  color: var(--tip-mods);
+}
+
+.tipeff.heal .tipstat,
+.tipeff.heal .tipeffdesc,
+.tipeff.heal .tl {
+  color: var(--tip-cost);	
+}
+
 .tip {
-  max-width: 340px;
-  background: linear-gradient(180deg, var(--tip-bg) 0%,
-              var(--tip-bg-mid) 45%, var(--tip-bg-low) 100%);
-  border: 1px solid var(--tip-border); border-radius: 3px;
+  max-width: 260px;
+  background: linear-gradient(
+    180deg,
+    var(--tip-bg) 0%,
+    var(--tip-bg-mid) 45%,
+    var(--tip-bg-low) 100%
+  );
+  border: 1px solid var(--tip-border);
+  border-radius: 2px;
   padding: 7px 9px 9px;
-  font-family: var(--sans); line-height: 1.45;
+  font-family: var(--sans);
+  line-height: 1.30;
 }
-.tiphead { display: flex; gap: 8px; align-items: flex-start; }
-.tiphead img { width: 32px; height: 32px; border-radius: 2px; flex: none; }
+
+.tiphead {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.tiphead img {
+  width: 32px;
+  height: 32px;
+  border-radius: 2px;
+  flex: none;
+}
+
 .tipname {
-  font: 600 15px var(--sans); color: var(--tip-name); letter-spacing: .02em;
+  font: 400 18px/1.2 "Cinzel", serif;
+  color: var(--tip-name);
 }
-.tipsub { font-size: 11px; color: var(--tip-stat); margin-top: 1px; }
 
-/* the client draws a plain rule between groups - Separator_Base */
-.tipbody, .tipdesc, .tipreq, .tipeff {
-  border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px;
+.tipsub {
+  font-size: 11px;
+  color: var(--tip-stat);
+  margin-top: 1px;
 }
-.tip .tl { font-size: 12px; color: var(--tip-stat); }
-.tip .tl.time, .tip .tl.time .tv, .tip .tl.time .tk { color: var(--tip-time); }
-.tip .tl.pip, .tip .tl.pip .tv, .tip .tl.pip .tk { color: var(--tip-pip); }
-.tip .tl.tipresist { color: var(--tip-resist); }
-/* The client's first tooltip row holds two things: the speed word on the left
-   and the range hard against the right edge. */
-.tip .tl.tiprow0 { display: flex; justify-content: space-between; gap: 16px; }
-.tip .tl.tiprow0 .tipright { text-align: right; }
-.tip .tk { color: var(--tip-stat); margin-right: 4px; }
-.tip .tv { color: var(--tip-stat); }
-/* "Cost:" is part of the cost, not a grey label beside it - the client writes
-   the whole line in the one colour. */
-.tip .tipbody.cost .tl, .tip .tipbody.cost .tv,
-.tip .tipbody.cost .tk { color: var(--tip-cost); }
-/* The cooldown always ends the panel, with one clear row above it. */
-.tip .tl.cdgap { margin-top: 1.45em; }
-.tip .tipbody.cost .tl.pip, .tip .tipbody.cost .tl.pip .tv,
-.tip .tipbody.cost .tl.pip .tk { color: var(--tip-pip); }
-/* These have to restate the label too, or the cost rule above - equal
-   specificity, later in the file - repaints "Cooldown:" as a cost. */
-.tip .tipbody.cost .tl.time, .tip .tipbody.cost .tl.time .tv,
-.tip .tipbody.cost .tl.time .tk { color: var(--tip-time); }
-.tip .tipbody.dmg .tl, .tip .tipbody.dmg .tv { color: var(--tip-damage); }
+
+.tipbody,
+.tipdesc,
+.tipreq,
+.tipeff {
+  margin-top: 5px;
+  padding-top: 4px;
+}
+
+.tip .tl {
+  font-size: 12px;
+  color: var(--tip-stat);
+}
+
+.tip .tl.time,
+.tip .tl.time .tv,
+.tip .tl.time .tk {
+  color: var(--tip-time);
+}
+
+.tip .tl.pip,
+.tip .tl.pip .tv,
+.tip .tl.pip .tk {
+  color: var(--tip-pip);
+}
+
+.tip .tl.tipresist {
+  color: var(--tip-resist);
+}
+
+.tip .tl.tiprow0 {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.tip .tl.tiprow0 .tipright {
+  text-align: right;
+}
+
+.tip .tk {
+  color: var(--tip-stat);
+  margin-right: 4px;
+}
+
+.tip .tv {
+  color: var(--tip-stat);
+}
+
+.tip .tipbody.cost .tl,
+.tip .tipbody.cost .tv,
+.tip .tipbody.cost .tk {
+  color: var(--tip-cost);
+}
+
+.tip .tl.cdgap {
+  margin-top: 1.45em;
+}
+
+.tip .tipbody.cost .tl.pip,
+.tip .tipbody.cost .tl.pip .tv,
+.tip .tipbody.cost .tl.pip .tk {
+  color: var(--tip-pip);
+}
+
+.tip .tipbody.cost .tl.time,
+.tip .tipbody.cost .tl.time .tv,
+.tip .tipbody.cost .tl.time .tk {
+  color: var(--tip-time);
+}
+
+.tip .tipbody.dmg .tl,
+.tip .tipbody.dmg .tv {
+  color: var(--tip-damage);
+}
+
 .tip code.dmg {
-  font: 12px var(--mono); color: var(--tip-damage);
-  background: #16181c; border-radius: 2px; padding: 0 4px;
+  font: 12px var(--mono);
+  color: var(--tip-damage);
+  background: #16181c;
+  border-radius: 2px;
+  padding: 0 4px;
 }
-.tipdesc { font-size: 12px; color: var(--tip-desc); }
-.tipreq { font-size: 11.5px; color: var(--tip-trait); }
-.tip .gambit { margin: 7px 0 0; }
-.tip .gambit .gl { color: var(--tip-cost); }
 
-/* an applied effect, quoted the way the game quotes it */
-.tipeffname { font: 600 12px var(--sans); color: var(--tip-name); text-decoration: none; }
-.tipeffname:hover { text-decoration: underline; }
-.tipeffdesc { font-size: 12px; color: var(--tip-desc); margin: 1px 0 3px; }
-.tipstat { font-size: 12px; color: var(--tip-mods); }
-.tipstat.cond { color: #6b6b6b; }
-/* "improved by Suppression" - not the client's wording, but the panel is the
-   only place a reader would look for it. */
-.tipimp { color: var(--ink-3); font-size: 11px; margin-left: 6px; }
-.tipdur { font-size: 12px; color: var(--tip-time); margin-top: 2px; }
-.tipresist { font-size: 12px; color: var(--tip-resist); }
+.tipdesc {
+  font-size: 12px;
+  color: var(--tip-desc);
+}
 
-.tipctl { margin-top: 8px; font-size: 11.5px; display: flex; align-items: center; gap: 6px; }
+.tipreq {
+  font-size: 11.5px;
+  color: var(--tip-trait);
+}
+
+.tip .gambit {
+  margin: 7px 0 0;
+}
+
+.tip .gambit .gl {
+  color: var(--tip-cost);
+}
+
+.tip a.tipefflink {
+  color: inherit;
+  text-decoration: none;
+  display: block;
+}
+
+.tip a.tipefflink:hover {
+  text-decoration: underline;
+}
+
+.tipeffdesc {
+  font-size: 12px;
+  color: var(--tip-desc);
+  margin: 1px 0 3px;
+}
+
+.tipstat {
+  font-size: 12px;
+  color: var(--tip-mods);
+}
+
+.tipdur {
+  font-size: 12px;
+  color: var(--tip-time);
+  margin-top: 2px;
+}
+
+.tipresist {
+  font-size: 12px;
+  color: var(--tip-resist);
+}
+
+.tipctl {
+  margin-top: 8px;
+  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .tipctl input {
-  width: 62px; background: var(--surface); color: var(--ink);
-  border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px;
+  width: 62px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 3px 6px;
   font: 12px var(--mono);
 }
-.tipnote { max-width: 560px; font-size: 11.5px; line-height: 1.6; margin-top: 8px; }
-.tipnote strong { color: var(--accent); font: 600 12px var(--mono); }
 
-/* an item set's bonus, worded the way the game words it */
-.setstat { color: var(--tip-mods); }
-.small { font-size: 11px; }
+.tipnote {
+  max-width: 560px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  margin-top: 8px;
+}
 
-/* the generated effect description - prose, with its references as links */
-.does { line-height: 1.6; max-width: 74ch; }
-.does .amt { color: var(--prose-amt); font-variant-numeric: tabular-nums; }
-.does .scaled { color: var(--ink-3); font-style: italic; }
-.does .summon { color: var(--tip-name); }
+.tipnote strong {
+  color: var(--accent);
+  font: 600 12px var(--mono);
+}
+
+.setstat {
+  color: var(--tip-mods);
+}
+
+.small {
+  font-size: 11px;
+}
 
 
-/* ---------- focus, for anyone not using a mouse ---------- */
-/* Nothing here had a focus style at all, so tabbing through the page was
-   invisible. :focus-visible keeps it off for mouse clicks. */
+/* ---------- generated effect description ---------- */
+
+.does {
+  line-height: 1.6;
+  max-width: 74ch;
+}
+
+.does .amt {
+  color: var(--prose-amt);
+  font-variant-numeric: tabular-nums;
+}
+
+.does .scaled {
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.does .summon {
+  color: var(--tip-name);
+}
+
+
+/* ---------- focus ---------- */
+
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-  border-radius: 3px;
+  border-radius: 2px;
 }
-.row:focus-visible { outline-offset: -2px; }
-/* a label that only a screen reader needs */
+
+.row:focus-visible {
+  outline-offset: -2px;
+}
+
 .sr {
-  position: absolute; width: 1px; height: 1px; overflow: hidden;
-  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
-.navlinks { display: flex; gap: 12px; flex-wrap: wrap; }
 
-/* ---------- your character ---------- */
-.prefs { margin-top: 10px; }
+/* ---------- character ---------- */
+
+.prefs {
+  margin-top: 9px;
+}
+
 .prefs > summary {
-  cursor: pointer; color: var(--ink-2); font-size: 12px; padding: 3px 0;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 12px;
+  padding: 3px 0;
 }
-.prefs > summary:hover { color: var(--accent); }
-#prefs { padding: 6px 0 2px; display: flex; flex-direction: column; gap: 6px; }
-.pf { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.pf > span { font-size: 11.5px; color: var(--ink-3); }
-.pf input, .pf select {
-  width: 116px; background: var(--bg); color: var(--ink);
-  border: 1px solid var(--border-strong); border-radius: 4px;
-  padding: 3px 6px; font: 12px var(--mono);
-}
-.pfgear { margin-top: 2px; }
-.pfgear > summary {
-  cursor: pointer; font-size: 11.5px; color: var(--ink-3); padding: 2px 0;
-}
-.pfgear .pf { margin-top: 5px; }
-.pfnote { font-size: 11px; line-height: 1.5; margin: 4px 0 2px; }
-/* the damage line, once the two character numbers are known */
-.resolved { color: var(--accent); font: 600 12px var(--mono); }
 
-/* ---------- the trait tree, as a tree ---------- */
-/* Cells carry their row and column; the page used to print them as a list,
-   which threw away the one thing a trait tree actually is. */
-:root { --tcell: 108px; }
+.prefs > summary:hover {
+  color: var(--accent);
+}
+
+#prefs {
+  padding: 6px 0 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pf {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pf > span {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.pf input,
+.pf select {
+  width: 116px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+  padding: 3px 6px;
+  font: 12px var(--mono);
+}
+
+.pfgear {
+  margin-top: 2px;
+}
+
+.pfgear > summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--ink-3);
+  padding: 2px 0;
+}
+
+.pfgear .pf {
+  margin-top: 5px;
+}
+
+.pfnote {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 4px 0 2px;
+}
+
+.resolved {
+  color: var(--accent);
+  font: 600 12px var(--mono);
+}
+
+
+/* ---------- trait tree ---------- */
+
 .ttree {
-  display: grid; gap: 8px; margin: 8px 0 4px;
-  /* stay at the left edge rather than stretching across the panel */
-  justify-content: start; align-items: stretch;
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 4px;
+  justify-content: start;
+  align-items: stretch;
 }
+
 a.tcell {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
-  padding: 8px 6px; text-align: center; text-decoration: none;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius); color: var(--ink-2);
-  min-width: 0; min-height: 94px; justify-content: flex-start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 7px 5px;
+  text-align: center;
+  text-decoration: none;
+  background: #191510;
+  border: 1px solid #342d23;
+  border-radius: 2px;
+  color: var(--ink-2);
+  min-width: 0;
+  min-height: 92px;
+  justify-content: flex-start;
 }
+
 a.tcell:hover {
-  border-color: var(--accent-dim); background: var(--surface-2);
-  color: var(--ink); text-decoration: none;
+  background: var(--surface-2);
+  text-decoration: none;
+  color: var(--ink);
 }
-a.tcell img { width: 32px; height: 32px; border-radius: 4px; background: var(--surface-3); flex: none; }
+
+a.tcell img {
+  width: 32px;
+  height: 32px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  flex: none;
+}
+
 a.tcell .tn {
-  font-size: 11px; line-height: 1.25;
-  /* "Shocking Counterattack" has to break inside a word rather than spill
-     out over the cell beside it */
-  overflow-wrap: anywhere; hyphens: auto;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  hyphens: auto;
 }
-a.tcell .tg { font: 10px var(--mono); color: var(--accent-dim); margin-top: auto; }
+
+a.tcell .tg {
+  font: 10px var(--mono);
+  color: var(--accent-dim);
+  margin-top: auto;
+}
 
 @media (max-width: 720px) {
-  :root { --tcell: 88px; }
-  .ttree { gap: 6px; }
-  a.tcell { min-height: 84px; padding: 6px 4px; }
-  a.tcell img { width: 28px; height: 28px; }
+  :root {
+    --tcell: 88px;
+  }
+
+  .ttree {
+    gap: 5px;
+  }
+
+  a.tcell {
+    min-height: 84px;
+    padding: 6px 4px;
+  }
+
+  a.tcell img {
+    width: 28px;
+    height: 28px;
+  }
 }
+
 
 /* ---------- property pages ---------- */
-/* code.pn is now a link to the property's own page. */
-a.pn { font: 11.5px var(--mono); color: var(--info); }
-a.pn:hover { color: var(--accent); }
-.plabel { font-size: 12.5px; color: var(--ink); margin-bottom: 1px; }
-.proprun { line-height: 1.9; max-width: 80ch; }
 
-/* ---------- the trait panel ---------- */
-/* Laid out like the client's: class and rank ladder on one line, the
-   description once, then every earnable rank in turn. The client paints the
-   rank you have in pale text and the ranks ahead of you in green; with no
-   character to read, rank 1 takes the pale role. */
-/* Sampled straight off in-game screenshots rather than guessed - the client's
-   trait panel uses its own palette, and none of it matches the skill one. */
-:root {
-  --tt-flavour: #C3B51F;   /* the description line */
-  --tt-class:   #2AB51F;   /* "Warden", "Beorning" */
-  --tt-rank:    #009900;   /* the "Rank: 2" labels */
-  --tt-value:   #99FF00;   /* every rank's modifiers, first one included */
-  --tt-earned:  #FF00FF;   /* "Skills Earned:" and the skills under it */
-  --tt-name:    #C3B585;   /* the title, and the state line */
+a.pn {
+  font: 11.5px var(--mono);
+  color: var(--info);
 }
-.tip.trait { max-width: 300px; }
-.tip.trait .tipname { color: var(--tt-name); }
-.tip.trait .tipdesc { color: var(--tt-flavour); }
-.tip.trait .tiprank .rl { color: var(--tt-rank); }
-.tip.trait .tipstat { color: var(--tt-value); }
-.tipearned { margin-top: 6px; font-size: 12px; color: var(--tt-earned); }
-.tipearned a { color: var(--tt-earned); }
-.tipearned a:hover { color: #FF7BFF; }
+
+a.pn:hover {
+  color: var(--accent);
+}
+
+.plabel {
+  font-size: 12.5px;
+  color: var(--ink);
+  margin-bottom: 1px;
+}
+
+.proprun {
+  line-height: 1.9;
+  max-width: 80ch;
+}
+
+
+/* ---------- trait panel ---------- */
+
+.tip.trait {
+  max-width: 300px;
+}
+
+.tip.trait .tipname {
+  color: var(--tt-name);
+}
+
+.tip.trait .tipdesc {
+  color: var(--tt-flavour);
+}
+
+.tip.trait .tiprank .rl {
+  color: var(--tt-rank);
+}
+
+.tip.trait .tipstat {
+  color: var(--tt-value);
+}
+
+.tipearned {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--tt-earned);
+}
+
+.tipearned a {
+  color: var(--tt-earned);
+}
+
+.tipearned a:hover {
+  color: #ff7bff;
+}
+
 .tipwho {
-  display: flex; justify-content: space-between; gap: 12px;
-  font-size: 12px; margin-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  margin-top: 4px;
 }
-.tipwho .tipclass { color: var(--tt-class); }
-.tipwho .tiprankmax { color: var(--tip-stat); }
-.tiprank { border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px; }
-.tiprank .rl { font-size: 12px; color: var(--tip-name); margin-bottom: 1px; }
-.tipcost { font-size: 12px; color: var(--tip-resist); margin-top: 6px; }
 
-/* the skills a specialisation hands you, under the branch heading */
-.specskills { font-size: 12px; margin: 2px 0 6px; }
-.specskills .sk { color: var(--tt-earned); margin-right: 6px; }
+.tipwho .tipclass {
+  color: var(--tt-class);
+}
 
-/* "You must slot at least one of these traits" - the client paints it pure
-   red, and it is the only thing that explains why a trait cannot be taken. */
-:root { --tt-require: #FF0000; }
+.tipwho .tiprankmax {
+  color: var(--tip-stat);
+}
+
+.tiprank {
+  border-top: 1px solid #2a2823;
+  margin-top: 7px;
+  padding-top: 6px;
+}
+
+.tiprank .rl {
+  font-size: 12px;
+  color: var(--tip-name);
+  margin-bottom: 1px;
+}
+
+.tipcost {
+  font-size: 12px;
+  color: var(--tip-resist);
+  margin-top: 6px;
+}
+
+.specskills {
+  font-size: 12px;
+  margin: 2px 0 6px;
+}
+
+.specskills .sk {
+  color: var(--tt-earned);
+  margin-right: 6px;
+}
+
 .tipmust {
-  border-top: 1px solid #2a2823; margin-top: 7px; padding-top: 6px;
-  font-size: 12px; color: var(--tt-require);
+  border-top: 1px solid #2a2823;
+  margin-top: 7px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--tt-require);
 }
-.tipmust a { color: var(--tt-require); }
-.tipmust a:hover { color: #FF7070; }
-.tipmust .mi { padding-left: 8px; }
 
-/* "Does not stack with": the group name and how many others are in it, as one
-   link. The count is dimmer but inside the anchor, so all of it is clickable. */
-a.stacklink .stackcount { color: var(--ink-3); font-size: 11.5px; }
-.stackmembers { margin-top: 3px; font-size: 12px; }
-a.stacklink:hover .stackcount { color: var(--accent); }
-/* a stat cell's trailing note needs the same breathing room a table row gives it */
-.stat .v .via { margin-left: 8px; }
+.tipmust a {
+  color: var(--tt-require);
+}
+
+.tipmust a:hover {
+  color: #ff7070;
+}
+
+.tipmust .mi {
+  padding-left: 8px;
+}
+
+
+/* ---------- stacking ---------- */
+
+a.stacklink .stackcount {
+  color: var(--ink-3);
+  font-size: 11.5px;
+}
+
+.stackmembers {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+a.stacklink:hover .stackcount {
+  color: var(--accent);
+}
+
+.stat .v .via {
+  margin-left: 8px;
+}
