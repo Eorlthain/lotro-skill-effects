@@ -119,6 +119,7 @@ function modSources() {
   return sideFile("modSources").then(function (m) { MODSRC = m; return m; });
 }
 function gambitData() { return sideFile("gambits"); }
+function pipData() { return sideFile("pips"); }
 function itemSetData() { return sideFile("itemsets"); }
 function stackingData() { return sideFile("stacking"); }
 function skillChannelData() { return sideFile("skillChannels"); }
@@ -250,6 +251,10 @@ function preloadTraitEffects(t) {
    shows the sequence as icons. The Burglar's Razor Wit line works the same way
    with its own four. GAMBITS maps the packed code to the builder it names. */
 var GAMBITS = null;
+/* The class resources, keyed by Skill_Pip_AffectedType. Fervour and the rest
+   just count up; Attunement and Balance swing either side of a home value and
+   carry an icon for each end. */
+var PIPS = null;
 
 /* The client shows a gambit as a bare row of builder icons after a green
    "Requires:" - no names, no arrows. The order is the press order; the name is
@@ -1398,7 +1403,7 @@ function renderSkill(s, progs, D, MS, ET) {
   var lvl = preferredLevel(topLevel(s, progs));
   function drawTip() {
     wrap.textContent = "";
-    wrap.appendChild(tooltipPanel(s, progs, D, lvl));
+    wrap.appendChild(tooltipPanel(s, progs, lvl));
     var ctl = el("div", "tipctl");
     ctl.appendChild(el("span", "muted", "at level "));
     var input = el("input");
@@ -1450,7 +1455,7 @@ function renderSkill(s, progs, D, MS, ET) {
         (s.channel.interruptedByMovement ? ", broken by movement" : "")
       : null],
     ["Threat", s.threat],
-    ["Pip change", s.pipChange],
+    ["Pip change", pipGlance(s), "wide"],
     ["Resist", resistNames(s.resistCategory)],
     ["Traceries", usesGear(ownerClasses(s), D) ? skillTraceries(s, MS) : null, "wide"]
   ]));
@@ -3247,9 +3252,35 @@ function tipLine(host, label, value, cls) {
 
    Skill_Pip_RequiredMaxValue (9 skills) is deliberately not printed: no
    in-game panel has been seen for one, and its wording would be a guess. */
+/* The At a glance version of the pip line - the same facts without the icon,
+   since a two-ended resource says nothing useful as a bare signed number. */
+function pipGlance(s) {
+  if (!s.pipType) return s.pipChange;
+  var def = PIPS && PIPS[s.pipType];
+  if (!def || !def.icons) return s.pipChange;
+  var bits = [];
+  if (s.pipChange) {
+    var side = s.pipChange < 0 ? "min" : "max";
+    bits.push(Math.abs(s.pipChange) + " toward " +
+              ((def.labels && def.labels[side]) || def.name));
+  }
+  if (s.pipTowardHome) {
+    bits.push(s.pipTowardHome + " toward " +
+              ((def.labels && def.labels.home) || def.name));
+  }
+  return bits.join(", ") || null;
+}
+
 function pipLines(host, s) {
-  var pip = s.pipType && spaceWords(enumWord("pipType", s.pipType));
-  if (!pip) return;
+  if (!s.pipType) return;
+  var def = PIPS && PIPS[s.pipType];
+  // the resource's own name beats the enum label - the DAT spells the enum
+  // "Atunement" and the client has never shown a player that
+  var pip = (def && def.name) || spaceWords(enumWord("pipType", s.pipType));
+  if (def && def.icons) {
+    twoEndedPipLines(host, s, def, pip);
+    return;
+  }
   var chg = s.pipChange, min = s.pipMin;
   if (chg > 0) {
     tipLine(host, null, "Adds " + chg + " to " + pip, "pip");
@@ -3269,7 +3300,78 @@ function pipLines(host, s) {
   else tipLine(host, null, "Removes " + spend + " from " + pip, "pip");
 }
 
-function tooltipPanel(s, progs, D, level) {
+/* Attunement and Balance do not count up - they slide either side of a home
+   value, and which way a skill slides you is the whole point. The client does
+   not spell the direction out in words: it prints an amount and lets one of
+   the resource's three icons say which end it belongs to.
+
+     Attunes:  3 [red rune]      toward Damage Attuned   Scathing Mockery
+     Attunes:  4 [pale rune]     back toward Balanced    Armour of The Elements
+     Requires: 7 [fore rune]     Balance 32, home 25     Lunge
+
+   Every number on these lines is RELATIVE TO HOME. The raw values are not:
+   Lunge wants Balance 32 on a scale whose middle is 25, and "Requires Balance
+   32" makes a reader do that subtraction themselves. 32 - 25 = 7 toward Fore,
+   and the icon carries the rest.
+
+   A negative change moves toward the low end, a positive one toward the high
+   end, and Skill_Pip_Toward_Home moves toward the middle from either side.
+   The end's own name survives as the icon's alt text and title, so hovering
+   still says "Damage Attuned" and a reader without images is not stranded. */
+function twoEndedPipLines(host, s, def, pip) {
+  function endName(side) {
+    return (def.labels && def.labels[side]) || pip;
+  }
+  function icon(side) {
+    var did = def.icons && def.icons[side];
+    if (!did) return null;
+    var img = el("img", "pipicon");
+    img.src = iconUrl(did);
+    img.alt = endName(side);
+    img.title = endName(side);
+    img.onerror = function () { this.style.visibility = "hidden"; };
+    return img;
+  }
+  // Label, number, icon - the same shape as "Cost: 3 Fervour", split into the
+  // same label and value spans.
+  function amountLine(label, side, amount) {
+    var wrap = el("span", "tv", String(amount));
+    var img = icon(side);
+    // the icon trails the number here, so its gap moves to the other side
+    if (img) { img.className += " pipafter"; wrap.appendChild(img); }
+    tipLine(host, label, wrap, "pip");
+  }
+  // Only for a resource whose home value is unknown - then a distance cannot
+  // be worked out and the raw threshold is all there is to say.
+  function sentence(side, words) {
+    var wrap = el("span", "tv");
+    var img = icon(side);
+    if (img) wrap.appendChild(img);
+    wrap.appendChild(document.createTextNode(words));
+    tipLine(host, null, wrap, "pip");
+  }
+  function requirement(value, isMin) {
+    if (def.home === undefined || def.home === null) {
+      sentence(isMin ? "max" : "min",
+               "Requires " + pip + " " + value + (isMin ? " or more" : " or less"));
+      return;
+    }
+    var d = value - def.home;
+    // At exactly home the distance is 0 and the sign says nothing, so the
+    // constraint itself picks the end: a minimum pushes up, a maximum down.
+    // "Requires: 0 [healing]" is right for Improved Rune of Restoration -
+    // any healing attunement at all, including none.
+    var side = d > 0 ? "max" : d < 0 ? "min" : (isMin ? "max" : "min");
+    amountLine("Requires:", side, Math.abs(d));
+  }
+  var chg = s.pipChange;
+  if (chg) amountLine("Attunes:", chg < 0 ? "min" : "max", Math.abs(chg));
+  if (s.pipTowardHome) amountLine("Attunes:", "home", s.pipTowardHome);
+  if (s.pipMin !== undefined && s.pipMin !== null) requirement(s.pipMin, true);
+  if (s.pipMax !== undefined && s.pipMax !== null) requirement(s.pipMax, false);
+}
+
+function tooltipPanel(s, progs, level) {
   var box = el("div", "tip");
 
   var head = el("div", "tiphead");
@@ -3336,7 +3438,12 @@ function tooltipPanel(s, progs, D, level) {
   if (s.aeSphereRadius !== undefined) {
     tipLine(top, "Radius:", fmt(s.aeSphereRadius) + "m");
   }
-  if (s.aeArcDegrees) tipLine(top, "Arc:", fmt(s.aeArcDegrees) + " degrees");
+  // An arc is a wedge in front of you, and what a player needs off the panel
+  // is how far it reaches, not how wide it opens. All 1,136 arc skills carry
+  // aeArcRadius alongside the angle, and 1,119 of them have no maxRange at
+  // all - so without this line their panel never says how far they reach.
+  // The angle is not lost: the page below draws the wedge, to scale.
+  if (s.aeArcDegrees) tipLine(top, "Range:", fmt(s.aeArcRadius) + "m");
   // The client puts the induction here, between the radius and the resistance,
   // and words it as bare seconds in the same grey as the rest of the block -
   // the green "time" colour belongs to the cooldown at the foot. Whether it
@@ -3352,7 +3459,10 @@ function tooltipPanel(s, progs, D, level) {
   if (s.resistCategory) {
     tipLine(top, null, resistWording(s, level), "tipresist");
   }
-  var shown = (s.displayType || []).map(function (t) {
+  // one malformed record must not blank the whole tooltip
+  var types = Array.isArray(s.displayType) ? s.displayType
+            : (s.displayType ? [s.displayType] : []);
+  var shown = types.map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
   });
   if (shown.length) tipLine(top, "Skill Type:", shown.join(", "));
@@ -3430,15 +3540,9 @@ function tooltipPanel(s, progs, D, level) {
     tipLine(foot, "Cooldown:", secs(s.cooldown), "time cdgap");
   }
   if (foot.children.length) box.appendChild(foot);
-
-  var req = (s.obtained || []).map(function (o) {
-    var c = D && D.classes[String(o["class"])];
-    if (!c) return null;
-    if (o.how === "level") return c.name + ", level " + o.level;
-    if (o.how === "rank") return c.name + ", rank " + (o.rank || 0);
-    return c.name;
-  }).filter(Boolean);
-  if (req.length) box.appendChild(el("div", "tipreq", "Requires " + req[0]));
+  // The panel ends at the cooldown. What class you have to be, and at what
+  // level, is provenance rather than what the skill does - the page's own
+  // "How you get it" section carries it, in full rather than first-only.
   return box;
 }
 
@@ -3499,8 +3603,7 @@ function effectTooltip(e, progs, D, level) {
     if (one) tipLine(body, null, one, vcls);
     if (e.pulseCount) {
       var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
-                          " every " + fmt(e.interval || e.duration) + "s, " +
-                          e.pulseCount + " times");
+                          overTimeTail(e));
       if (rep) tipLine(body, null, rep, vcls);
     }
   }
@@ -3523,13 +3626,27 @@ function effectTooltip(e, progs, D, level) {
     if (e.combatOnly) tipLine(foot, null, combatOnlyNote(), "time");
     else tipLine(foot, "Duration:", "permanent", "time");
   } else if (e.pulseCount && e.interval) {
-    tipLine(foot, "Duration:", secs(e.interval * e.pulseCount) +
-      "  (" + e.pulseCount + " pulses, " + fmt(e.interval) + "s apart)", "time");
+    tipLine(foot, "Duration:", secs(e.interval * e.pulseCount), "time");
   } else if (e.duration !== undefined) {
     tipLine(foot, "Duration:", secs(e.duration), "time");
   }
   if (foot.children.length) box.appendChild(foot);
   return box;
+}
+
+/* How the client words a repeating heal or damage: "every 2.0 seconds for 12
+   seconds" - the interval always to one decimal, the span as the whole time it
+   runs, and "seconds" spelled out rather than the "s" the duration rows use.
+   Effect_Duration_ConstantInterval is emitted as both `interval` and
+   `duration`, so the total is that times the pulse count. */
+function overTimeTail(e) {
+  var iv = e.interval || e.duration;
+  if (!iv || !e.pulseCount) return "";
+  // Always one decimal on the interval - fmt() returns "2" for a whole
+  // number, and the client writes "every 2.0 seconds".
+  // The client ends this one with a full stop, unlike every other panel line.
+  return " every " + Number(iv).toFixed(1) + " seconds for " +
+         fmt(iv * e.pulseCount) + " seconds.";
 }
 
 /* One heal or damage-over-time line. Two things stop the stored number from
@@ -3801,9 +3918,6 @@ function traitTooltip(t, progs, D, level, maxRank) {
     box.appendChild(must);
   }
 
-  if (t.minLevel > 1) {
-    box.appendChild(el("div", "tipreq", "Requires level " + t.minLevel));
-  }
   return box;
 }
 
@@ -3938,9 +4052,7 @@ function effectBody(blk, e, ref, progs, level) {
     if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); lines.push(vl); }
     if (e.pulseCount) {
       var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
-                          v.vpsPerPulse, v.perPulseVariance,
-                          " every " + fmt(e.interval || e.duration) + "s, " +
-                          e.pulseCount + " times");
+                          v.vpsPerPulse, v.perPulseVariance, overTimeTail(e));
       if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); lines.push(vr); }
     }
   }
@@ -3960,6 +4072,7 @@ function effectBody(blk, e, ref, progs, level) {
   // A duration on its own says nothing without the line it belongs to.
   if (!lines.length) return 0;
   var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
+  if (e.pulseCount && dur) dur = dur * e.pulseCount;
   if (dur !== undefined && dur > 0) {
     lines.push(el("div", "tipdur", "Duration: " + secs(dur)));
   } else if (e.permanent) {
@@ -5595,7 +5708,7 @@ function route() {
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
               effectTraceries(), sourceClasses(), gambitData(), propertyData(),
               displayTypeData(), itemSetData(), stackingData(),
-              skillChannelData()];
+              skillChannelData(), pipData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
@@ -5604,6 +5717,7 @@ function route() {
     SETS = res[9] || {};
     STACKING = res[10] || {};
     CHANNELS = res[11] || {};
+    PIPS = res[12] || {};
     var rec = res[0];
     if (!rec) {
       detail.textContent = "";
