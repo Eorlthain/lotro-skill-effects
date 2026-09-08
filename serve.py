@@ -27,6 +27,13 @@ class SPA(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=HERE, **kw)
 
+    def end_headers(self):
+        # Local preview must never serve a stale file. Rebuilding and still
+        # seeing the previous answer - because the browser kept data/*.json -
+        # is indistinguishable from the rebuild not having worked.
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        super().end_headers()
+
     def send_head(self):
         path = urllib.parse.urlparse(self.path).path
         rel = posixpath.normpath(urllib.parse.unquote(path)).lstrip("/")

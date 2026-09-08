@@ -16,7 +16,22 @@ var BASE = (function () {
    real paths instead; navigation is intercepted below and served from the data
    already in hand, so it is still a single-page app. */
 function urlFor(route) { return BASE + String(route).replace(/^\/+/, ""); }
-function dataUrl(file) { return BASE + file; }
+/* The same ?v=N the page already carries on app.js and style.css, put on
+   every data file too. Without it a rebuild shipped new JSON to a reader who
+   still had the old copy cached - the markup and the code updated, the data
+   did not, and the page showed yesterday's answer with no way to tell. The
+   number comes off this script's own tag, so refresh.py's existing bump
+   invalidates the data as well. Icons are NOT versioned: an icon id names one
+   immutable picture, and busting 14,000 of them every rebuild would be a lot
+   of downloading for nothing. */
+var ASSET_V = (function () {
+  var tag = document.querySelector('script[src*="app.js"]');
+  var m = tag && /[?&]v=([0-9]+)/.exec(tag.getAttribute("src") || "");
+  return m ? m[1] : "";
+})();
+function dataUrl(file) {
+  return BASE + file + (ASSET_V ? "?v=" + ASSET_V : "");
+}
 function propUrl(name) { return urlFor("property/" + encodeURIComponent(name)); }
 function stackUrl(name) { return urlFor("stacking/" + encodeURIComponent(name)); }
 
@@ -1688,7 +1703,10 @@ function renderEffect(e, progs, MS, D, ET) {
     // tooltip leaves this out, the way the client does
     ["Probability", (e.probability !== undefined && e.probability < 0.999)
       ? fmt(e.probability * 100, 1) + "%" : null],
-    ["Chance granted by", chanceSource(e), "wide"],
+    // the property is ADDITIVE, so on an effect that already has a chance of
+    // its own it adds to it rather than being the whole of it
+    [e.probability ? "Chance added to by" : "Chance granted by",
+     chanceSource(e), "wide"],
     ["Resist", resistNames(e.resistCategory)],
     // Effects sharing an equivalence class do not stack with one another.
     // Naming the class was as far as this went; what a player is asking is
@@ -1815,6 +1833,7 @@ function renderEffect(e, progs, MS, D, ET) {
   if (e.parentEffects) section(host, "Applied by these effects", linkList(e.parentEffects, "effect"));
   section(host, "Granted by these items", itemSources(e));
   section(host, "Switched on by these, through a property", modGrantSources(e));
+  section(host, "Effects it adds to other skills", enablesBlock(e));
   section(host, "Left on the ground by these", hotspotSources(e));
   section(host, "Put on you by world state", worldStateSources(e));
   if (e.usedBySkills) {
@@ -2425,6 +2444,11 @@ function renderTrait(t, D, MS, progs) {
       return { id: g.id, via: g.rank ? "at rank " + g.rank : "" };
     }), "effect"));
   }
+  // A trait can supply a skill's conditional effects directly, the same way an
+  // effect can. Nothing in the live data does - all 549 grantors are effects -
+  // but normalize writes the field either way, so the page reads it either way
+  // rather than silently dropping one.
+  section(host, "Effects it adds to other skills", enablesBlock(t));
   // Which classes reach this trait, and by which of the four routes. The last
   // two matter most: a specialization trait and a set-bonus trait sit in no
   // tree cell and on no level table, so without them a trait page like The
@@ -2879,6 +2903,43 @@ function effectRunCell(ids) {
     };
   }), 4, 0));
   return td;
+}
+
+/* conditionalBlock read backwards. A skill says "I apply these extra effects
+   when something sets this property"; the effect or trait that SETS it said
+   nothing at all, so the link ran one way only - and the wrong way round for
+   anyone reading the buff. Centreing Self (1879060704) adds a power restore
+   to Intent Concentration and its page named neither the skill nor the effect
+   it adds; the skill's page carried the whole relationship.
+
+   Grouped by what is added, because one grantor usually plugs the same effect
+   list into many skills - the largest covers 239 of them. */
+function enablesBlock(rec) {
+  var rows = rec.enables || [];
+  if (!rows.length) return null;
+  var t = el("table", "t");
+  t.innerHTML = "<tr><th>Adds</th><th>To these skills</th></tr>";
+  rows.forEach(function (r) {
+    var tr = el("tr");
+    tr.appendChild(effectRunCell(r.effects || []));
+    var td = el("td");
+    td.appendChild(linkRun((r.skills || []).map(function (id) {
+      return function () {
+        var meta = nameOf(id);
+        if (!meta) return null;
+        var a = el("a", null, meta.n);
+        a.href = urlFor("skill/" + id);
+        return a;
+      };
+    }), 8, r.more || 0));
+    // the property is the whole mechanism, so it is named rather than implied
+    var pn = el("div");
+    pn.appendChild(propCode(r.prop));
+    td.appendChild(pn);
+    tr.appendChild(td);
+    t.appendChild(tr);
+  });
+  return t;
 }
 
 /* An effect whose application chance is zero cannot land on its own. The
@@ -3894,17 +3955,27 @@ function traitTooltip(t, progs, D, level, maxRank) {
     // printing nothing, so this stays out until the real source is found.
   }
 
-  // What has to be slotted first. The client prints this in red, and for the
-  // "one of these" case it is the only thing on the panel explaining why a
-  // trait cannot be taken - Wind Lore needs The Keeper of Animals or The
-  // Ancient Master, and nothing else says so.
+  // What has to be slotted first - or must NOT be. The client prints this in
+  // red, and for the "one of these" case it is the only thing on the panel
+  // explaining why a trait cannot be taken. The three operators are real and
+  // opposite: Volley is barred by The Bowmaster and The Trapper, and calling
+  // that a requirement told the reader to slot the very traits that lock it.
+  var MUST_WORDS = {
+    one: ["You must slot this trait:", "You must slot at least one of these traits:"],
+    all: ["You must slot this trait:", "You must slot all of these traits:"],
+    none: ["You must not have this trait slotted:",
+           "You must have none of these traits slotted:"]
+  };
   if (t.requires && t.requires.length) {
     var must = el("div", "tipmust");
     t.requires.forEach(function (group) {
-      must.appendChild(el("div", "ml", group.length > 1
-        ? "You must slot at least one of these traits:"
-        : "You must slot this trait:"));
-      group.forEach(function (g) {
+      // a build from before the operator was carried is a bare array
+      var list = group && group.traits ? group.traits : group;
+      var op = (group && group.op) || "one";
+      if (!list || !list.length) return;
+      var words = MUST_WORDS[op] || MUST_WORDS.one;
+      must.appendChild(el("div", "ml", words[list.length > 1 ? 1 : 0]));
+      list.forEach(function (g) {
         var row = el("div", "mi");
         var rec = D && D.traits ? D.traits[String(g.id)] : null;
         row.appendChild(document.createTextNode("- "));
