@@ -478,7 +478,7 @@ function fmt(n, dp) {
   if (n === undefined || n === null) return "-";
   if (typeof n !== "number") return String(n);
   if (Number.isInteger(n)) return String(n);
-  var s = n.toFixed(dp === undefined ? 2 : dp);
+  var s = n.toFixed(dp === undefined ? 3 : dp);
   // strip trailing zeros only after a decimal point - the old pattern turned
   // toFixed(0) of 30.000001 ("30") into "3"
   return s.indexOf(".") === -1 ? s
