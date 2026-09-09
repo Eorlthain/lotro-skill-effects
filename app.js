@@ -1403,16 +1403,13 @@ function renderSkill(s, progs, D, MS, ET) {
       tags.appendChild(el("span", "tag", titleCase(k)));
     });
   }
-  // "immediate" is not listed here any more - the panel below carries the
-  // speed line the way the client does, and printing it twice on one page
-  // read as two different facts.
+
   ["usableWhileMoving", "requiresFacing", "mustBeStealthed",
    "breaksStealth", "ignoresResetTime"].forEach(function (f) {
     if (s[f]) tags.appendChild(el("span", "tag", titleCase(f)));
   });
   host.appendChild(tags);
 
-  // No flavour text here - the tooltip below carries it, as the game does.
 
   var wrap = el("div");
   var lvl = preferredLevel(topLevel(s, progs));
@@ -1498,7 +1495,7 @@ function renderSkill(s, progs, D, MS, ET) {
           (c.perSecond ? " per second" : "")) + "</td>" +
         '<td class="num">' + fmt(c.points) + "</td>" +
         '<td class="num">' + (c.percent === undefined ? "-" : fmt(c.percent * 100, 3) + "%") + "</td>" +
-        '<td class="num">' + (c.progression ? "progression " + c.progression : "-") + "</td>" +
+        "<td>" + (c.progression ? "scales with level" : "-") + "</td>" +
         "<td></td>";
       // the modifier cell holds links, so it is built rather than templated
       tr.cells[4].appendChild(linkRun((c.mods || []).map(function (m) {
@@ -1507,9 +1504,10 @@ function renderSkill(s, progs, D, MS, ET) {
       t.appendChild(tr);
     });
     section(host, "Cost", t);
-    (s.costs || []).forEach(function (c) {
-      if (c.progression) progChart(host, progs, c.progression, (c.type || "Cost") + " cost");
-    });
+    // No chart for the cost curve. 4,529 skills carry one - 4,187 of them
+    // Power, 340 war-steed Power, 2 Morale - and a rising line of power cost
+    // is not something a reader ever needed drawn: the panel above already
+    // resolves the actual cost at their level, and the level box moves it.
   }
 
   if (s.attacks) {
@@ -1572,7 +1570,7 @@ function renderSkill(s, progs, D, MS, ET) {
    ["critEffectsAdditive", "Critical effects (additive)"],
    ["requiredEffects", "Requires these effects"],
    ["barringEffects", "Barred by these effects"],
-   ["consumedEffects", "Consumes these effects"]].forEach(function (pair) {
+   ["consumedEffects", "Requires and consumes these effects"]].forEach(function (pair) {
     if (s[pair[0]]) {
       section(host, pair[1], linkList(s[pair[0]], "effect", traceryLine(ET, gearOk)));
     }
@@ -1711,7 +1709,11 @@ function renderEffect(e, progs, MS, D, ET) {
     // Effects sharing an equivalence class do not stack with one another.
     // Naming the class was as far as this went; what a player is asking is
     // "so what else is in it", which is now one click away.
-    ["Does not stack with", stackLink(e.equivalence, e.id), "wide"],
+    // "does not stack with" is wrong for a class that holds more than one
+    [(STACKING && stackMax(STACKING[e.equivalence]) > 1)
+      ? "Stacks up to " + stackMax(STACKING[e.equivalence]) + ", with"
+      : "Does not stack with",
+     stackLink(e.equivalence, e.id), "wide"],
     // which rung of that class this one is: an Aegis - 1 and an Aegis - 5
     // share a slot and are not interchangeable
     ["Class priority", (e.equivalence && typeof e.classPriority === "number")
@@ -1864,7 +1866,7 @@ function renderEffect(e, progs, MS, D, ET) {
   // under "applied by" claimed a skill casts the effect that blocks it.
   [["requiredBySkills", "Required by these skills"],
    ["barsSkills", "Bars these skills"],
-   ["consumedBySkills", "Consumed by these skills"]].forEach(function (pair) {
+   ["consumedBySkills", "Required and consumed by these skills"]].forEach(function (pair) {
     if (!e[pair[0]]) return;
     section(host, pair[1], linkList(e[pair[0]].filter(function (id) {
       return reachable(id, owners);
@@ -3458,18 +3460,25 @@ function tooltipPanel(s, progs, level) {
   // Induction is NOT up here: it belongs with the cost and cooldown at the
   // foot, and printing it in both places said the same thing twice.
   var top = el("div", "tipbody");
-  // There is no "Fast" flag in the data because Fast is the default:
-  // Skill_Immediate is the only thing that moves a skill off it, and 146 of
-  // the 13,323 skills set it. It is separate from induction - a skill can have
-  // an induction and still be Fast.
+
+  // The speed label is only present for skills explicitly marked as
+  // Skill_Immediate or Skill_IgnoresResetTime. A skill with neither flag
+  // has no speed label at all.
   var row0 = el("div", "tl tiprow0");
-  row0.appendChild(el("span", "tv", s.immediate ? "Immediate" : "Fast"));
+
+  if (s.immediate) {
+    row0.appendChild(el("span", "tv", "Immediate"));
+  } else if (s.ignoresResetTime) {
+    row0.appendChild(el("span", "tv", "Fast"));
+  }
+
   if (s.maxRange !== undefined) {
     row0.appendChild(el("span", "tv tipright",
       (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
       fmt(s.maxRange) + "m Range"));
   }
-  top.appendChild(row0);
+
+if (row0.children.length) top.appendChild(row0);
   // Skill_AnimationMode is the ANIMATION, not the combat category: Wizard's
   // Frost animates as "Melee" while the client calls it a Tactical Skill. The
   // category is Skill_AttackHook_DamageQualifier, whose "Magic" is what the
@@ -5126,10 +5135,24 @@ function buildPrefsUI() {
    with 52 members is a list nobody reads in a stat cell. */
 var STACK_LIST_MAX = 10;
 
-/* A stacking group ships as [id, class priority, 1 if it guards the class].
-   Older builds wrote bare ids, so both shapes are read. */
+/* A stacking group ships as {m: [[id, class priority, 1 if it guards the
+   class]], max, perCaster}. Older builds wrote the member array on its own,
+   and older ones still wrote bare ids, so all three shapes are read. */
+function stackMembers(group) {
+  if (!group) return [];
+  return group.m || (group.length !== undefined ? group : []);
+}
+/* How many of the class a target can hold, and whether that is counted per
+   caster. Absent means one - which is the whole point of an equivalence
+   class, and true of all but 18 of the groups on this site. */
+function stackMax(group) {
+  var n = group && group.max;
+  return typeof n === "number" && n > 1 ? n : 1;
+}
+function stackPerCaster(group) { return !!(group && group.perCaster); }
+
 function stackRows(group) {
-  return (group || []).map(function (row) {
+  return stackMembers(group).map(function (row) {
     return (row && row.length !== undefined)
       ? { id: row[0], pri: row[1], guard: !!row[2] }
       : { id: row, pri: null, guard: false };
@@ -5142,7 +5165,7 @@ function stackIds(group) {
 function stackLink(name, selfId) {
   if (!name) return null;
   var group = STACKING && STACKING[name];
-  if (!group || group.length < 2) {
+  if (!group || stackMembers(group).length < 2) {
     // a class with no other member does not stack against anything in
     // particular, so there is nothing to link to
     return el("span", "muted", name);
@@ -5154,9 +5177,10 @@ function stackLink(name, selfId) {
   var a = el("a", "stacklink");
   a.href = stackUrl(name);
   a.appendChild(document.createTextNode(spaceWords(name)));
+  var members = stackMembers(group);
   var others = stackIds(group).filter(function (id) { return id !== selfId; });
-  if (group.length >= STACK_LIST_MAX || !others.length) {
-    var rest = group.length - (others.length === group.length ? 0 : 1);
+  if (members.length >= STACK_LIST_MAX || !others.length) {
+    var rest = members.length - (others.length === members.length ? 0 : 1);
     // a real space, not a CSS gap - this text gets read and copied
     a.appendChild(el("span", "stackcount",
       " (" + rest + " other" + (rest === 1 ? "" : "s") + ")"));
@@ -5200,9 +5224,14 @@ function renderStacking(name, group) {
     else if (r.pri !== first) ranked = true;
   });
 
+  var maxOn = stackMax(group);
+  var perCaster = stackPerCaster(group);
+
   var tags = el("div", "tags");
   tags.appendChild(el("span", "tag kind", "Stacking group"));
   tags.appendChild(el("span", "tag", rows.length + " effects"));
+  if (maxOn > 1) tags.appendChild(el("span", "tag", "Stacks up to " + maxOn));
+  if (perCaster) tags.appendChild(el("span", "tag", "Per caster"));
   if (ranked) tags.appendChild(el("span", "tag", "Ranked by priority"));
   host.appendChild(tags);
 
@@ -5210,14 +5239,33 @@ function renderStacking(name, group) {
   // which reads as a disarm overwriting the immunity to disarm sitting in the
   // same class. The class is a slot; Effect_ClassPriority decides who holds
   // it, and a protection effect in the list is not competing for it at all.
+  // Most classes hold one member, but 18 of them hold more - the three
+  // Ballads among them - and saying "one at a time" of those was simply wrong.
+  var howMany = maxOn > 1
+    ? ", and a target can hold up to " + maxOn + " of them at once"
+    : ", so a target holds one of them at a time";
+  var whichSurvives = ranked
+    ? (maxOn > 1
+        ? " - which ones survive when another lands is settled by the priority "
+          + "beside each name, not by whichever came last. A lower priority "
+          + "does not displace a higher one."
+        : " - and which one is settled by the priority beside each name, not by "
+          + "whichever landed last. A lower priority does not displace a higher "
+          + "one; equal priorities take the slot from each other.")
+    : (maxOn > 1
+        // which of them is dropped once the limit is reached is not something
+        // the client data says, so it is not claimed here
+        ? ". Every member here is at the same priority, so none of them "
+          + "outranks another."
+        : ". Every member here is at the same priority, so a second "
+          + "application takes the slot from the first.");
   host.appendChild(el("p", "desc",
-    "These all carry the equivalence class " + name + ", so a target holds "
-    + "one of them at a time" + (ranked
-      ? " - and which one is settled by the priority beside each name, not by "
-        + "whichever landed last. A lower priority does not displace a higher "
-        + "one; equal priorities take the slot from each other."
-      : ". Every member here is at the same priority, so a second application "
-        + "takes the slot from the first.")));
+    "These all carry the equivalence class " + name + howMany + whichSurvives));
+  if (perCaster) {
+    host.appendChild(el("p", "desc",
+      "The limit is counted per caster, so one from each caster can be on the "
+      + "same target at the same time."));
+  }
   if (guards) {
     host.appendChild(el("p", "desc",
       (guards === 1 ? "One effect here is" : guards + " effects here are")
