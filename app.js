@@ -4,6 +4,16 @@
    in, taken from the script tag rather than guessed, so the same build works at
    a domain root, in a GitHub Pages project subpath, and on localhost.
    Everything the page fetches or links to is built on it. */
+   
+/* Site-wide banner */
+(function () {
+  var banner = document.createElement("div");
+  banner.id = "banner";
+  banner.innerHTML = 'This site is a work in progress and may contain mistakes. ' +
+    'Join the Fridge Discord: <a href="https://discord.gg/TyyG5hnBbg" target="_blank" rel="noopener">https://discord.gg/TyyG5hnBbg</a>';
+  document.body.insertBefore(banner, document.body.firstChild);
+})();   
+   
 var BASE = (function () {
   var tag = document.querySelector('script[src*="app.js"]');
   var u = tag ? new URL(tag.getAttribute("src"), document.baseURI)

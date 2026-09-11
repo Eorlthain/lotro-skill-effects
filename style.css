@@ -48,8 +48,6 @@
   --tip-desc: #cccc7f;
   --tip-damage: #c31c1f;
   --tip-cost: #00e500;
-  /* a pip line is not the power cost - the client gives the class
-     resource its own yellow-green */
   --tip-pip: #c3e81f;
   --tip-time: #009900;
   --tip-trait: #c1c1c1;
@@ -76,15 +74,14 @@
 
 html,
 body {
-  height: 100%;
-}
-
-body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
   font: 14px/1.5 var(--sans);
   -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
 }
 
 a {
@@ -102,7 +99,8 @@ a:hover {
 .app {
   display: grid;
   grid-template-columns: 315px 1fr;
-  height: 100dvh;
+  flex: 1;
+  min-height: 0;
 }
 
 @media (max-width: 900px) {
@@ -887,11 +885,6 @@ ul.links li.twoline {
   color: var(--tip-cost);	
 }
 
-/* A vital line is built as a <span class="tv"> so its parts can be styled
-   separately, and .tip .tv beats the block rules above - which left "Restores
-   30% of maximum Morale" in the modifier grey inside a green heal block. The
-   line takes the colour of what it does, on a skill panel and on the effect's
-   own panel alike. */
 .tipeff.heal .tipstat .tv,
 .tip .tl.vital.heal,
 .tip .tl.vital.heal .tv {
@@ -1302,6 +1295,20 @@ a.tcell .tg {
   }
 }
 
+#banner {
+  background: #2e281f;
+  border-bottom: 1px solid #514532;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  color: #b3a894;
+  text-align: center;
+  flex: none;
+}
+
+#banner a {
+  color: #dfb968;
+  text-decoration: underline;
+}
 
 /* ---------- property pages ---------- */
 
