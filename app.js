@@ -147,10 +147,16 @@ function gambitData() { return sideFile("gambits"); }
 function pipData() { return sideFile("pips"); }
 function itemSetData() { return sideFile("itemsets"); }
 function stackingData() { return sideFile("stacking"); }
+/* What switches each combo gate flag on. A combo row names the flag it waits
+   on - Fulgurant Strike's blue version wants BlueLine - and the flag name on
+   its own only moves the question along one step, so this says which trait,
+   effect, set or tracery puts it there. */
+function comboFlagData() { return sideFile("comboFlags"); }
 function skillChannelData() { return sideFile("skillChannels"); }
 var CHANNELS = null;
 var STACKING = null;
 var SETS = null;
+var COMBOFLAGS = null;
 function propertyData() { return sideFile("properties"); }
 /* Which effects a world property switches on - the reverse of an effect's
    "Put on you by world state" block. A world property is not a modifier
@@ -1108,6 +1114,98 @@ function viaLabel(via) {
   }).join(", ");
 }
 
+/* ---------------- why a combo is open ---------------- */
+
+/* A combo row carries the flags it waits on. The client keeps them in a
+   bitfield named per class - Combat_Brawler_SkillCombo, Combat_Warden_
+   SkillCombo, and three that are not class-named at all - and a skill offers
+   the chain only while the named flags are set on the player.
+
+   Naming the flag was never going to be enough on its own: "combos into
+   Fulgurant Strike while BlueLine" just moves the question along one step.
+   comboFlags.json closes it - BlueLine is what the trait The Fulcrum ORs into
+   ForwardSource_Combat_Brawler_SkillCombo, so the line can name the trait. */
+var COMBO_SRC_SHOWN = 4;
+
+function comboFlagSources(prop, flag) {
+  var byProp = COMBOFLAGS && COMBOFLAGS[prop];
+  var rec = byProp && byProp[flag];
+  if (!rec) return null;
+  var ids = [], more = 0;
+  ["traits", "effects", "sets", "traceries"].forEach(function (kind) {
+    (rec[kind] || []).forEach(function (id) { ids.push(id); });
+    more += rec[kind + "More"] || 0;
+  });
+  return ids.length ? { ids: ids, more: more } : null;
+}
+
+/* "Dissonance from Dissonance" is not an answer, it is an echo: the flag and
+   the effect that sets it are often one name. Compared loosely because the
+   flag is an internal token and the record is prose - Itemset_Call_to_
+   Greatness_Two against "Call to Greatness". */
+function sameWords(a, b) {
+  return String(a).toLowerCase().replace(/[^a-z0-9]/g, "")
+      === String(b).toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/* One flag: what it is called, and - where the data knows - what puts it on
+   you. Flags like DualWield and Stealthed are states the client works out for
+   itself and no record sets them, so the name stands alone rather than the
+   line pretending to an answer it does not have. */
+function comboFlagNode(prop, flag) {
+  var span = el("span", "comboflag");
+  var label = spaceWords(flag);
+  var src = comboFlagSources(prop, flag);
+  // one source, named the same as the flag: the name becomes the link rather
+  // than being printed twice with "from" between the copies
+  if (src && src.ids.length === 1 && !src.more) {
+    var only = nameOf(src.ids[0]);
+    if (only && sameWords(only.n, label)) {
+      var b = el("b");
+      b.appendChild(readerLink(src.ids[0], routeFor(only.t)));
+      span.appendChild(b);
+      return span;
+    }
+  }
+  span.appendChild(el("b", null, label));
+  if (!src) return span;
+  span.appendChild(document.createTextNode(" from "));
+  // two sets can share a name - Call to Greatness is two of them - and the
+  // site's habit is to trail the id rather than print one name twice
+  var dup = ambiguousNames(src.ids);
+  span.appendChild(linkRun(src.ids.map(function (id) {
+    return function () {
+      var meta = nameOf(id);
+      return meta ? readerLink(id, routeFor(meta.t), null, dup) : null;
+    };
+  }), COMBO_SRC_SHOWN, src.more ? src.more + " more not listed" : 0));
+  return span;
+}
+
+/* `when` is a list of alternatives - any one of them opens the chain - and
+   each alternative is a list of [gate property, flags] pairs whose flags are
+   all required together. normalize.py has already dropped the alternatives a
+   weaker one covers, so every line here is a way in that the others are not. */
+function comboWhy(id, r) {
+  if (!r || !r.when || !r.when.length) return null;
+  var box = el("div", "combowhy");
+  r.when.forEach(function (alt, i) {
+    var line = el("div");
+    line.appendChild(el("span", "muted", i ? "or while " : "while "));
+    var first = true;
+    alt.forEach(function (pair) {
+      var prop = pair[0], flags = pair[1] || [];
+      flags.forEach(function (flag) {
+        if (!first) line.appendChild(el("span", "muted", " and "));
+        first = false;
+        line.appendChild(comboFlagNode(prop, flag));
+      });
+    });
+    box.appendChild(line);
+  });
+  return box;
+}
+
 function linkList(refs, kindGuess, subLine) {
   var ul = el("ul", "links");
   // Four distinct skills apply a Warden Morale-tap and they share two names
@@ -1138,7 +1236,9 @@ function linkList(refs, kindGuess, subLine) {
     if (r && r.via) bits.push(viaLabel(r.via));
     if (bits.length) body.appendChild(el("span", "via", bits.join("  ")));
 
-    var extra = subLine ? subLine(id) : null;
+    // the row, not just the id: two combo rows can name one skill and differ
+    // only in the flags that open them, and an id alone cannot tell them apart
+    var extra = subLine ? subLine(id, r) : null;
     if (extra) {
       body.appendChild(extra);
       li.className = "twoline";
@@ -1591,12 +1691,12 @@ function renderSkill(s, progs, D, MS, ET) {
   // with nothing - Desperate Shield and Desperate Fist said nothing about
   // Desperate Spear, which is the only way into them.
   if (s.combos) section(host, "Combos into", linkList(s.combos.map(function (c) {
-    return { id: c.skill, via: c.mode };
-  }), "skill"));
+    return { id: c.skill, via: c.mode, when: c.when };
+  }), "skill", comboWhy));
   if (s.comboFrom) {
     section(host, "Combos from", linkList(s.comboFrom.map(function (c) {
-      return { id: c.skill, via: c.mode };
-    }), "skill"));
+      return { id: c.skill, via: c.mode, when: c.when };
+    }), "skill", comboWhy));
   }
 
   if (D && MS) section(host, "Effects with no chance of their own", chanceBlock(s, D, MS));
@@ -5837,7 +5937,7 @@ function route() {
   var jobs = [loadRecord(kind, id), progressions(), classData(), modSources(),
               effectTraceries(), sourceClasses(), gambitData(), propertyData(),
               displayTypeData(), itemSetData(), stackingData(),
-              skillChannelData(), pipData()];
+              skillChannelData(), pipData(), comboFlagData()];
   Promise.all(jobs).then(function (res) {
     SRC_CLASS = res[5] || {};
     GAMBITS = res[6] || {};
@@ -5847,6 +5947,7 @@ function route() {
     STACKING = res[10] || {};
     CHANNELS = res[11] || {};
     PIPS = res[12] || {};
+    COMBOFLAGS = res[13] || {};
     var rec = res[0];
     if (!rec) {
       detail.textContent = "";

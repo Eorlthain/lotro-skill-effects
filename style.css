@@ -1434,6 +1434,26 @@ a.pn:hover {
 }
 
 
+/* ---------- why a combo is open ---------- */
+
+.combowhy {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+
+/* the flag is the condition, so it carries the weight; the words around it
+   are scaffolding and stay quiet */
+.combowhy .comboflag b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.combowhy .muted {
+  color: var(--ink-3);
+}
+
 /* ---------- stacking ---------- */
 
 a.stacklink .stackcount {
