@@ -750,6 +750,12 @@ a.eff {
   margin-left: 22px;
 }
 
+/* A grouped skill list sits under its class heading the same distance in as a
+   reader run does, so the two pages indent alike. */
+.propgroup ul.links {
+  margin-left: 22px;
+}
+
 table.t td .via {
   margin-left: 8px;
 }
@@ -877,6 +883,16 @@ ul.links li.twoline {
 
 .tipeff .tipeffdesc {
   color: var(--tip-mods);
+}
+
+/* An effect's own sentence - "Forced Attack" - is flavour, not a value, so it
+   reads in the panel's description colour whether the effect harms or heals.
+   It used to share .tipeffdesc and so came out in the red kept for what a
+   harmful effect does to a target, which made a plain label look like damage.
+   Deliberately NOT under a .tipeff.harm/.heal rule: that is the point. */
+.tipeff .tipeffflavour {
+  font-size: 12px;
+  color: var(--tip-desc);
 }
 
 .tipeff.heal .tipstat,

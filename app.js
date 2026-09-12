@@ -1948,11 +1948,12 @@ function renderEffect(e, progs, MS, D, ET) {
   section(host, "Effects it adds to other skills", enablesBlock(e));
   section(host, "Left on the ground by these", hotspotSources(e));
   section(host, "Put on you by world state", worldStateSources(e));
+  section(host, "Put on you by a class resource", pipStepSources(e));
   if (e.usedBySkills) {
     section(host, "Applied by these skills",
-            linkList(e.usedBySkills.filter(function (id) {
+            skillsByClass(e.usedBySkills.filter(function (id) {
               return reachable(id, owners);
-            }), "skill"));
+            }), D));
   }
   // Skills that reach this effect through another effect. A Warden Morale-tap
   // is applied by an over-time effect, and THAT is what the four skills cast,
@@ -1964,7 +1965,7 @@ function renderEffect(e, progs, MS, D, ET) {
       vbox.appendChild(el("p", "muted",
         "These cast an effect that applies this one, rather than applying it "
         + "themselves."));
-      vbox.appendChild(linkList(via, "skill"));
+      vbox.appendChild(skillsByClass(via, D));
       if (e.viaSkillsMore) {
         vbox.appendChild(el("p", "muted",
           "and " + e.viaSkillsMore + " more not listed"));
@@ -4214,6 +4215,30 @@ function tipEffLink(node, id) {
    fallback: where an effect changes no property at all that sentence is the
    whole of what it does, and without it the block would be empty. Returns how
    many lines it put up, so a caller can drop a block that said nothing. */
+/* The sentence a skill panel shows for an effect that carries no numbers of
+   its own. Three strings could serve and they are not interchangeable:
+
+     Effect_Definition_Description  what the effect IS   "Forced Attack"
+     Effect_Description_Override    an author's replacement wording
+     Effect_Applied_Description     the line you read when it LANDS on someone
+                                    "The monster is infuriated."
+
+   A skill panel answers "what will this do", so the definition wins: Challenge
+   reads "Forced Attack", not a combat-log sentence about a monster. No effect
+   in the data carries both a definition and an override, so their order
+   settles nothing; the effect's own page already prints all three, in this
+   order.
+
+   The applied line is the last resort, and only for an effect the client is
+   told about at all. Challenge also carries a Taunt whose only string is that
+   line and which is never sent to the client: nothing in the game ever shows a
+   player "Attempts to make the target consider you their most dangerous
+   threat", so neither does this, and with no other line the block goes with
+   it. 697 effects are in that position. */
+function effectSentence(e) {
+  return e.desc || e.descOverride || (e.serverOnly ? null : e.applied) || null;
+}
+
 function effectBody(blk, e, ref, progs, level) {
   var before = blk.children.length;
   var dispel = dispelWording(e, level);
@@ -4253,9 +4278,12 @@ function effectBody(blk, e, ref, progs, level) {
   // Only where there is no value at all: 1,649 effects suppress every modifier
   // line they carry, and for those the sentence IS the effect.
   if (!lines.length) {
-    var text = e.applied || e.descOverride;
+    var text = effectSentence(e);
     if (text) {
-      var d = multiLine("tipeffdesc", text);
+      // flavour, not a number: it reads in the panel's description colour the
+      // way the effect's own page already prints the same string, rather than
+      // in the red kept for what a harmful effect does to a target
+      var d = multiLine("tipeffflavour", text);
       if (d) lines.push(d);
     }
   }
@@ -4963,6 +4991,98 @@ function worldStateSources(rec) {
   return box;
 }
 
+/* ---------------- what a class resource puts on you ---------------- */
+
+/* Nothing casts Extremely Foreward (1879466226). No trait grants it, no item
+   carries it, no skill applies it - it is simply on you while the Mariner's
+   Balance reads 44 to 50, and a pip's step list is the only thing in the data
+   that says so. Its page used to read "permanent, beneficial" and stop there.
+
+   pips.json ships the forward direction (each resource, each band, the effects
+   that sit on you inside it); this is the reverse, built once from it rather
+   than as its own file, because pips.json is 25 records long and is already
+   loaded on every record page. */
+var PIP_STEPS = null;
+function pipStepIndex() {
+  if (PIP_STEPS) return PIP_STEPS;
+  if (!PIPS) return {};
+  var index = {};
+  Object.keys(PIPS).forEach(function (key) {
+    var def = PIPS[key];
+    (def.steps || []).forEach(function (st) {
+      (st.effects || []).forEach(function (id) {
+        (index[id] || (index[id] = []))
+          .push({ pip: def, min: st.min, max: st.max });
+      });
+    });
+  });
+  // Balance - Aft sits on the bottom two bands, 0-6 and 7-18, which is one
+  // stretch with a line drawn through it: the boundary is where a DIFFERENT
+  // effect on the same step changes, not this one. Touching bands of one
+  // resource are merged so the page says 0 to 18 rather than naming a
+  // threshold the player never crosses.
+  Object.keys(index).forEach(function (id) {
+    var rows = index[id].sort(function (a, b) {
+      return a.pip.name < b.pip.name ? -1
+           : a.pip.name > b.pip.name ? 1 : a.min - b.min;
+    });
+    var out = [];
+    rows.forEach(function (r) {
+      var last = out[out.length - 1];
+      if (last && last.pip === r.pip && r.min <= last.max + 1) {
+        last.max = Math.max(last.max, r.max);
+      } else {
+        out.push(r);
+      }
+    });
+    index[id] = out;
+  });
+  PIP_STEPS = index;
+  return PIP_STEPS;
+}
+
+/* Which end of a two-ended resource a band sits on, in the name the client
+   uses for it - the one derived from the effects on that side. */
+function pipSideOf(def, row) {
+  if (def.home === undefined) return null;
+  return (row.min <= def.home && def.home <= row.max) ? "home"
+       : (row.max < def.home ? "min" : "max");
+}
+
+function pipStepSources(e) {
+  var rows = pipStepIndex()[e.id];
+  if (!rows || !rows.length) return null;
+  var ul = el("ul", "links plain");
+  rows.forEach(function (r) {
+    var def = r.pip;
+    var li = el("li");
+    var side = pipSideOf(def, r);
+    var icon = side && def.icons && def.icons[side];
+    if (icon) {
+      var img = el("img", "pipicon");
+      img.src = iconUrl(icon);
+      img.alt = "";
+      img.onerror = function () { this.style.visibility = "hidden"; };
+      li.appendChild(img);
+    }
+    // A band covering the whole range is not a condition: the resource always
+    // reads something, so the effect is simply always there.
+    var whole = def.min !== undefined && def.max !== undefined
+             && r.min <= def.min && r.max >= def.max;
+    li.appendChild(el("span", "summon", whole
+      ? "At any " + def.name
+      : "While your " + def.name + " reads " +
+        (r.min === r.max ? r.min : r.min + " to " + r.max)));
+    var label = side && def.labels && def.labels[side];
+    if (label && !whole) {
+      li.appendChild(el("span", "via",
+        side === "home" ? "the " + label + " middle" : "the " + label + " end"));
+    }
+    ul.appendChild(li);
+  });
+  return ul;
+}
+
 /* A hotspot is a patch of ground that does something to whoever stands in it.
    Like a summon it has no page - it is a thing in the world, not a record a
    reader browses - so it is named rather than linked. */
@@ -5503,6 +5623,95 @@ function renderProperty(prop, MS, D) {
   return host;
 }
 
+/* ---------------- grouping a long list by class ---------------- */
+
+/* Free Peoples first, then monster play, each alphabetically, and whatever the
+   data cannot place last. Shared, so a property page's readers and an effect
+   page's skills come out in the same order rather than each page inventing
+   one. */
+var NO_CLASS = "none";
+
+function classOf(key, D) {
+  if (key === NO_CLASS) return null;
+  return (D && D.classes ? D.classes[key] : null) || null;
+}
+
+function byClassOrder(D) {
+  return function (a, b) {
+    if (a === NO_CLASS) return 1;
+    if (b === NO_CLASS) return -1;
+    var ca = classOf(a, D), cb = classOf(b, D);
+    var sa = (ca && ca.side === "creep") ? 1 : 0;
+    var sb = (cb && cb.side === "creep") ? 1 : 0;
+    if (sa !== sb) return sa - sb;
+    return ((ca && ca.name) || a).localeCompare((cb && cb.name) || b);
+  };
+}
+
+/* The class's icon and name, and a count of what is under it. */
+function classGroupHead(key, D, tail) {
+  var head = el("div", "propgrouphead");
+  var c = classOf(key, D);
+  if (c) {
+    var im = el("img");
+    im.src = iconUrl(c.icon);
+    im.alt = "";
+    im.className = "inline";
+    im.onerror = function () { this.style.visibility = "hidden"; };
+    head.appendChild(im);
+    var a = el("a", null, c.name);
+    a.href = urlFor("class/" + c.id);
+    head.appendChild(a);
+  } else {
+    head.appendChild(el("span", null, "No class attached"));
+  }
+  // a real space, not just a CSS margin - this text gets read and copied
+  if (tail) head.appendChild(el("span", "via", " " + tail));
+  return head;
+}
+
+/* Which class or classes can reach each of these, in that order. A record two
+   classes can reach is listed under both: that is the truthful answer to "can
+   MY class do this", asked once per class. */
+function bucketByClass(ids) {
+  var buckets = {}, keys = [];
+  ids.forEach(function (id) {
+    var own = (SRC_CLASS && SRC_CLASS[String(id)]) || [];
+    (own.length ? own : [NO_CLASS]).forEach(function (cid) {
+      var key = String(cid);
+      if (!buckets[key]) { buckets[key] = []; keys.push(key); }
+      buckets[key].push(id);
+    });
+  });
+  return { buckets: buckets, keys: keys };
+}
+
+/* A skill list grouped the way a property page groups its readers. Effect
+   1879477203 is applied by 42 skills across five classes, and flat that is a
+   wall a reader has to scan for their own class; grouped it is five short
+   answers.
+
+   With everything in one bucket the heading would say nothing the page does
+   not already say, so a single-class list stays flat - which is most effects.
+   Falls back to flat when the class data has not loaded. */
+function skillsByClass(ids, D) {
+  if (!ids || !ids.length) return null;
+  if (!D || !D.classes) return linkList(ids, "skill");
+  var b = bucketByClass(ids);
+  if (b.keys.length < 2) return linkList(ids, "skill");
+  b.keys.sort(byClassOrder(D));
+  var box = el("div");
+  b.keys.forEach(function (key) {
+    var mine = b.buckets[key];
+    var group = el("div", "propgroup");
+    group.appendChild(classGroupHead(key, D,
+      mine.length + " skill" + (mine.length === 1 ? "" : "s")));
+    group.appendChild(linkList(mine, "skill"));
+    box.appendChild(group);
+  });
+  return box;
+}
+
 /* The readers of one property, in class order, with everything the data
    cannot place gathered at the end rather than mixed through. */
 function readersByClass(prop, MS, D) {
@@ -5518,59 +5727,25 @@ function readersByClass(prop, MS, D) {
   });
   if (!rows.length) return null;
 
-  var NONE = "none";
   var buckets = {}, order = [];
   rows.forEach(function (row) {
     var own = (SRC_CLASS && SRC_CLASS[String(row.id)]) || [];
-    // A record reachable by two classes belongs under both - that is the
-    // truthful answer to "can my class reach it", asked once per class.
-    (own.length ? own : [NONE]).forEach(function (cid) {
+    (own.length ? own : [NO_CLASS]).forEach(function (cid) {
       var key = String(cid);
       if (!buckets[key]) { buckets[key] = []; order.push(key); }
       buckets[key].push(row);
     });
   });
-
-  function nameOfClass(key) {
-    if (key === NONE) return null;
-    var c = D && D.classes ? D.classes[key] : null;
-    return c || null;
-  }
-  order.sort(function (a, b) {
-    if (a === NONE) return 1;
-    if (b === NONE) return -1;
-    var ca = nameOfClass(a), cb = nameOfClass(b);
-    // Free Peoples first, then monster play, each alphabetically
-    var sa = (ca && ca.side === "creep") ? 1 : 0;
-    var sb = (cb && cb.side === "creep") ? 1 : 0;
-    if (sa !== sb) return sa - sb;
-    return ((ca && ca.name) || a).localeCompare((cb && cb.name) || b);
-  });
+  order.sort(byClassOrder(D));
 
   var box = el("div");
   order.forEach(function (key) {
-    var c = nameOfClass(key);
     var group = el("div", "propgroup");
-    var head = el("div", "propgrouphead");
-    if (c) {
-      var im = el("img");
-      im.src = iconUrl(c.icon);
-      im.alt = "";
-      im.className = "inline";
-      im.onerror = function () { this.style.visibility = "hidden"; };
-      head.appendChild(im);
-      var a = el("a", null, c.name);
-      a.href = urlFor("class/" + c.id);
-      head.appendChild(a);
-    } else {
-      head.appendChild(el("span", null, "No class attached"));
-    }
     var ids = {};
     buckets[key].forEach(function (r) { ids[r.id] = 1; });
-    // a real space, not just a CSS margin - this text gets read and copied
-    head.appendChild(el("span", "via", " " + Object.keys(ids).length + " reader" +
-      (Object.keys(ids).length === 1 ? "" : "s")));
-    group.appendChild(head);
+    var n = Object.keys(ids).length;
+    group.appendChild(classGroupHead(key, D,
+      n + " reader" + (n === 1 ? "" : "s")));
     group.appendChild(readerRuns(buckets[key]));
     box.appendChild(group);
   });
