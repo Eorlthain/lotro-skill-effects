@@ -224,13 +224,21 @@ function preloadTipEffects(s) {
     }));
   }
   // A carrier's payload is what the panel actually prints, so it has to be in
-  // hand too - one level down, which is as deep as the client goes.
+  // hand too - one level down, which is as deep as the client goes. A combo
+  // router's untraited branch is printed at the same depth, for the same
+  // reason - see comboBaseBranch.
   return fetchAll(Object.keys(ids)).then(function () {
     var deeper = {};
     Object.keys(ids).forEach(function (id) {
       var e = EFFECT_CACHE[id];
-      if (!e || !carrierLines(e)) return;
-      (e.nested || []).forEach(function (n) { deeper[n.id] = 1; });
+      if (!e) return;
+      if (carrierLines(e)) {
+        (e.nested || []).forEach(function (n) { deeper[n.id] = 1; });
+        return;
+      }
+      (e.nested || []).forEach(function (n) {
+        if (n.via === COMBO_BASE_VIA) deeper[n.id] = 1;
+      });
     });
     return fetchAll(Object.keys(deeper));
   });
@@ -3837,6 +3845,8 @@ function effectTooltip(e, progs, D, level) {
 
   var body = el("div", "tipbody");
   ccLines(e).forEach(function (n) { body.appendChild(n); });
+  var bub = bubbleLine(e, progs, level);
+  if (bub) tipLine(body, null, bub);
   var v = e.vital;
   if (v) {
     var init = v.initial !== undefined ? v.initial
@@ -3935,6 +3945,35 @@ function vitalLine(e, v, value, vps, variance, tail) {
     span.appendChild(el("span", "muted", "  +/-" + fmt(variance * 100, 0) + "%"));
   }
   return span;
+}
+
+/* A bubble soaks damage until the pool it grants is spent. The size of that
+   pool is the whole of what the effect does and it is nowhere in the
+   Mod_Array, so every bubble on the site said nothing about itself: Word of
+   Exaltation (effect 1879220523) carries four modifiers and all four are
+   value 0 until a trait supplies them, which left the panel with no line and
+   the block dropped - a heal skill whose tooltip never mentioned its bubble.
+
+   The client words it "Applies a damage preventing bubble granting 16%
+   temporary morale." Three shapes in the data, 88 effects: a percentage of
+   maximum (38), a flat amount (40), and a progression that scales with level
+   (8) - the last resolved against the panel's own level box. The vital is
+   Health on all but two, and its display name comes from the enum the way
+   every other vital line gets it. */
+function bubbleLine(e, progs, level) {
+  var b = e.bubble;
+  if (!b) return null;
+  var amount;
+  if (b.percent) {
+    amount = fmt(b.percent * 100, 3) + "%";
+  } else {
+    var v = b.value !== undefined ? b.value : progAt(progs, b.progression, level);
+    if (v === null || v === undefined || !v) return null;
+    amount = num(v);
+  }
+  var vital = enumWord("vitalType", b.type || "Health") || "Morale";
+  return "Applies a damage preventing bubble granting " + amount +
+         " temporary " + vital.toLowerCase() + ".";
 }
 
 /* The property that has to supply an application chance, and the chance it
@@ -4250,6 +4289,17 @@ function carrierLines(e) {
       (e.fellowshipWho || "the Fellowship") +
       " within " + fmt(e.fellowshipRange) + " metres:" };
   }
+  // An area carrier is the same shape: a radius, and whoever is standing in
+  // it. Who that is comes from what the payload DOES rather than from the
+  // Effect_Area_Affects* flags - those name entity categories (monsters,
+  // monster-players, player pets) and which of them count as enemies depends
+  // on the caster's own side, so a creep AoE would read backwards. A harmful
+  // payload is aimed at enemies whoever throws it.
+  if (e.areaRange !== undefined) {
+    return { pre: [], header: "Effects applied to " +
+      (e.harmful ? "enemies" : "allies") +
+      " within " + fmt(e.areaRange) + " metres:" };
+  }
   if (e.reviveVitals && e.reviveVitals.length) {
     return {
       pre: e.reviveVitals.map(function (v) {
@@ -4260,6 +4310,44 @@ function carrierLines(e) {
     };
   }
   return null;
+}
+
+/* A combo effect is a server-side router, not something that happens to you:
+   it looks for an effect on the caster and applies one of two others depending
+   on whether it found it. Both branches are named on the router -
+   Effect_Combo_EffectToAddIfPresent and ..._IfNotPresent - and the router
+   itself usually has no name, no description and no modifiers, so the panel
+   printed nothing at all for it.
+
+   The NotPresent branch is the panel's own case. What these routers look for
+   is trait- or gear-granted (the Rune-keeper's is Flashing Images, effect
+   1879313929, off the trait of that name), and the panel is the skill
+   untraited and ungeared - so the branch taken when nothing has been granted
+   is the branch to print. Epic Conclusion (1879109295) and the seven other
+   Rune-keeper attunement finishers reach "Returns to Neutral Attunement"
+   (effect 1879253754) this way, and in game every one of them says so just
+   above the cost.
+
+   Only where the branch is a SENTENCE and no numbers. Following the branch
+   wherever it leads would put values on 72 more skills that nothing has
+   reported missing, and one of them - Null Effect, 1879117734, on 26 skills -
+   is a movement multiplier of exactly 1.0 that would print a no-op line. This
+   restriction is the reported case and nothing else; widen it when a skill
+   turns up whose numbers the game does show through a router.
+
+   Returns the branch EFFECT, so effectBody renders it the way it renders any
+   sentence-only effect: description colour, linked to its own page. */
+var COMBO_BASE_VIA = "Effect_Combo_EffectToAddIfNotPresent";
+
+function comboBaseBranch(e, level) {
+  var br = null;
+  (e.nested || []).forEach(function (n) {
+    if (n.via === COMBO_BASE_VIA && !br) br = EFFECT_CACHE[String(n.id)];
+  });
+  if (!br || br.probability === 0) return null;
+  if (dispelWording(br, level) || ccLines(br).length ||
+      br.vital || (br.stats || []).length) return null;
+  return effectSentence(br) ? br : null;
 }
 
 /* Every line an effect puts on a skill panel links back to the effect, so the
@@ -4280,27 +4368,32 @@ function tipEffLink(node, id) {
    whole of what it does, and without it the block would be empty. Returns how
    many lines it put up, so a caller can drop a block that said nothing. */
 /* The sentence a skill panel shows for an effect that carries no numbers of
-   its own. Three strings could serve and they are not interchangeable:
+   its own. Three strings could serve and they are NOT interchangeable:
 
      Effect_Definition_Description  what the effect IS   "Forced Attack"
      Effect_Description_Override    an author's replacement wording
      Effect_Applied_Description     the line you read when it LANDS on someone
                                     "The monster is infuriated."
 
-   A skill panel answers "what will this do", so the definition wins: Challenge
-   reads "Forced Attack", not a combat-log sentence about a monster. No effect
-   in the data carries both a definition and an override, so their order
-   settles nothing; the effect's own page already prints all three, in this
-   order.
+   A skill panel answers "what will this do", so it uses the definition -
+   Challenge reads "Forced Attack", not a combat-log sentence about a monster.
+   No effect carries both a definition and an override, so their order settles
+   nothing.
 
-   The applied line is the last resort, and only for an effect the client is
-   told about at all. Challenge also carries a Taunt whose only string is that
-   line and which is never sent to the client: nothing in the game ever shows a
-   player "Attempts to make the target consider you their most dangerous
-   threat", so neither does this, and with no other line the block goes with
-   it. 697 effects are in that position. */
+   THE APPLIED LINE IS NOT PANEL TEXT AT ALL. It is what the client writes on
+   the effect icon once the effect is on someone, and the game does not repeat
+   it here: Renewed Defences (1879384922) is a marker with no modifiers whose
+   only string is one, and it appears on no skill tooltip in the game though
+   three skills apply it. This was the last resort until that was reported;
+   797 effects were riding on it, 578 of them printing literal junk ("..", a
+   DNT note) and the remaining 219 printing icon text for immunity markers and
+   raid mechanics - "Unaffected by debuffs which slow movement speed", "Cannot
+   move. Damage will not end this state."
+
+   Nothing is lost from the site: the effect's OWN page still prints all three,
+   in this order. Only the skill panel stops borrowing the wrong one. */
 function effectSentence(e) {
-  return e.desc || e.descOverride || (e.serverOnly ? null : e.applied) || null;
+  return e.desc || e.descOverride || null;
 }
 
 function effectBody(blk, e, ref, progs, level) {
@@ -4318,6 +4411,8 @@ function effectBody(blk, e, ref, progs, level) {
     return blk.children.length - before;
   }
   var lines = ccLines(e);
+  var bub = bubbleLine(e, progs, level);
+  if (bub) lines.push(el("div", "tipstat", bub));
   // What it does to your morale or power. Only the effect's OWN panel used to
   // print this, so a heal skill's tooltip - Chord of Salvation, Raise the
   // Spirit - never said how much it heals, and the block was dropped for
@@ -4397,6 +4492,10 @@ function effectBlocks(s, progs, level) {
         var ne = EFFECT_CACHE[String(n.id)];
         if (!ne) return;
         // A carrier is only a wrapper, so what it hands on decides the colour.
+        // Only the heal case: the carrier's own harmful flag already sets
+        // "harm", and adding it from the payload too gave a carrier with one
+        // harmful and one restorative nested effect both classes at once -
+        // "Effects applied to allies" in the red kept for debuffs.
         if (isHeal(ne)) blk.className += " heal";
         effectBody(host, ne, null, progs, level);
       });
@@ -4407,7 +4506,10 @@ function effectBlocks(s, progs, level) {
       if (blk.children.length) out.push(blk);
       return;
     }
-    if (effectBody(blk, e, ref, progs, level)) out.push(blk);
+    if (effectBody(blk, e, ref, progs, level)) { out.push(blk); return; }
+    // Nothing of its own: if it is a router, say what it routes to untraited.
+    var base = comboBaseBranch(e, level);
+    if (base && effectBody(blk, base, null, progs, level)) out.push(blk);
   });
   // the panel quotes at most six, the way the client's box is bounded - but
   // saying so beats letting the rest disappear without a word

@@ -702,6 +702,13 @@ table.t img.inline {
   color: var(--tip-time);
 }
 
+/* "Effects applied to enemies within 10 metres:" introduces a debuff, so it
+   reads in the same red as the numbers under it. The friendly version keeps
+   the green above - the line's colour says which way the effect points. */
+.tip .tipeff.harm .tipeffwho {
+  color: var(--tip-mods-harm);
+}
+
 .tip .tipeff .dispel {
   text-decoration: none;
   display: block;
