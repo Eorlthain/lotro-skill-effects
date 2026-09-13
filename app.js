@@ -3442,10 +3442,20 @@ function ccLines(e) {
   return out;
 }
 
-/* Effect_Duration_CombatOnly. Such an effect carries no duration of its own:
-   it holds for as long as you are fighting and drops once you have been out
-   of combat for the client's grace period. That period is a global - nothing
-   on the effect carries it - so it is named here. 2,818 effects set the flag. */
+/* "Expires if out of combat for 9 seconds." IS a real client line - Gambit
+   Chain - Step 1 (1879459423) prints it in game. What it is not is a line
+   every combat-only effect gets: `Effect_Duration_CombatOnly` on its own
+   covers 3,167 effects, and 2,765 of those also set
+   `Effect_RemovalOnlyInCombat`, which says only combat can take the effect
+   off - so leaving the fight does nothing and the line would be a lie. Power
+   of Knowledge (1879369513) is one of those.
+
+   normalize.py settles the pair into `expiresOutOfCombat` (402 effects) and
+   the panel reads that. `combatOnly` stays raw for the page's "Combat only"
+   tag either way.
+
+   The 9 is a client global - nothing on the effect carries it - so it is
+   named here, and it is the number the game shows. */
 var COMBAT_ONLY_GRACE = 9;
 function combatOnlyNote() {
   return "Expires if out of combat for " + COMBAT_ONLY_GRACE + " seconds.";
@@ -3470,9 +3480,25 @@ function auraWording(e) {
 }
 
 /* One or several resist categories, in the client's own words. */
+/* The client calls this category TACTICAL. The data calls it Magic, and the
+   resist and dispel enums carry no log strings at all - extract.py writes out
+   only the values whose label DIFFERS from the internal token, and for those
+   two enums there are none - so enumWord hands the token straight back and
+   "Resistance: Magic" reached the panel.
+
+   The word is not invented here: the damage-qualifier enum does spell it out
+   ("Magic" -> "Tactical Skill"), and the skill-type line has hard-coded the
+   same rename since it was written. This puts it in one place for every list
+   that names a combat category - Resistance: on 156 skills and 72 effects,
+   and the generated dispel list on 10 more. */
+function categoryWord(field, value) {
+  var w = enumWord(field, value);
+  return w === "Magic" ? "Tactical" : w;
+}
+
 function resistNames(cats) {
   if (!cats) return null;
-  var word = function (c) { return titleCase(enumWord("resistCategory", c)); };
+  var word = function (c) { return titleCase(categoryWord("resistCategory", c)); };
   return Array.isArray(cats) ? cats.map(word).join(", ") : word(cats);
 }
 
@@ -3920,8 +3946,8 @@ function effectTooltip(e, progs, D, level) {
   // permanent wins: such an effect still carries an interval, and printing
   // that as its duration says it lasts a second when it never expires
   if (e.permanent) {
-    if (e.combatOnly) tipLine(foot, null, combatOnlyNote(), "time");
-    else tipLine(foot, "Duration:", "permanent", "time");
+    // nothing where there is nothing to say - see durationNode
+    if (e.expiresOutOfCombat) tipLine(foot, null, combatOnlyNote(), "time");
   } else if (e.pulseCount && e.interval) {
     tipLine(foot, "Duration:", secs(e.interval * e.pulseCount), "time");
   } else if (e.duration !== undefined) {
@@ -4471,7 +4497,7 @@ function dispelWording(e, level) {
   var n = e.dispelMax || 1;
   var out = "Removes up to " + n + " " +
     e.dispelCategories.map(function (c) {
-      return titleCase(enumWord("dispelCategories", c));
+      return titleCase(categoryWord("dispelCategories", c));
     }).join(", ") +
     " effect" + (n === 1 ? "" : "s");
   // Effect_DispelByResist_StrengthRestrictionOffset is added to the caster's
@@ -4621,7 +4647,7 @@ function tagPayload(host, from, ne) {
 
    Build the payload FIRST: with nothing in it the heading would announce
    effects that never arrive. */
-function groupBlock(e, g, progs, level, withDuration) {
+function groupBlock(e, g, progs, level, withDuration, held) {
   var host = el("div");
   var heal = false;
   g.nested.forEach(function (n) {
@@ -4640,7 +4666,7 @@ function groupBlock(e, g, progs, level, withDuration) {
   blk.appendChild(el("div", "tipeffwho" + (g.cls ? " " + g.cls : ""), g.header));
   while (host.firstChild) blk.appendChild(host.firstChild);
   if (withDuration && !blk.querySelector(".tipdur")) {
-    var dn = durationNode(e, null);
+    var dn = durationNode(e, null, held);
     if (dn) blk.appendChild(dn);
   }
   return blk;
@@ -4653,7 +4679,7 @@ function overTimeBlocks(e, progs, level, opts) {
   if (!groups) return [];
   var out = [];
   groups.forEach(function (g) {
-    var blk = groupBlock(e, g, progs, level, opts.duration);
+    var blk = groupBlock(e, g, progs, level, opts.duration, opts.held);
     if (blk) out.push(blk);
   });
   return out;
@@ -4789,13 +4815,19 @@ function effectSentence(e) {
 /* How long a block's effect lasts. The reference's own duration wins where it
    carries one; a pulsing effect's stored duration is the INTERVAL, so the span
    is that times the pulse count. */
-function durationNode(e, ref) {
+function durationNode(e, ref, held) {
   // Permanent WINS, the way effectTooltip's foot has always had it: such an
   // effect still carries an interval, and printing that as its duration says
   // Power of Knowledge lasts a second when it never expires on its own.
+  //
+  // And a permanent effect has no duration to state, so it states none:
+  // "Duration: permanent" is gone from all 14,054 of them. The one line such
+  // an effect can carry is the out-of-combat expiry - and not even that on a
+  // skill the reader HOLDS, because a toggle or a channel keeps its effects
+  // for exactly as long as it runs and the foot already says so.
   if (e.permanent) {
-    return el("div", "tipdur",
-              e.combatOnly ? combatOnlyNote() : "Duration: permanent");
+    return (e.expiresOutOfCombat && !held)
+      ? el("div", "tipdur", combatOnlyNote()) : null;
   }
   var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
   if (e.pulseCount && dur) dur = dur * e.pulseCount;
@@ -4805,7 +4837,7 @@ function durationNode(e, ref) {
   return null;
 }
 
-function effectBody(blk, e, ref, progs, level) {
+function effectBody(blk, e, ref, progs, level, held) {
   var before = blk.children.length;
   var dispel = dispelWording(e, level);
   if (dispel) {
@@ -4860,7 +4892,7 @@ function effectBody(blk, e, ref, progs, level) {
   }
   // A duration on its own says nothing without the line it belongs to.
   if (!lines.length) return 0;
-  var dn = durationNode(e, ref);
+  var dn = durationNode(e, ref, held);
   if (dn) lines.push(dn);
   // A line that already carries its own link keeps it - a reactive effect's
   // payload is built by effectBody one level down and points at the effect it
@@ -4918,14 +4950,15 @@ function effectBlocks(s, progs, level) {
     // An over-time applier is two blocks, not one - what it does on landing
     // and what it does on every pulse, each under its own heading.
     var timed = overTimeBlocks(e, progs, level,
-                               { withInitial: true, duration: true });
+                               { withInitial: true, duration: true,
+                                 held: held });
     if (timed.length) {
       // Additive, not instead of: 23 of these carriers do say something of
       // their own ("Puts on your costume!" on the 20 Guise skills,
       // "+1 Focus every 5 Seconds" on Stance: Precision) and an early return
       // threw it away.
       var own = el("div", cls);
-      if (effectBody(own, e, ref, progs, level)) made.push(own);
+      if (effectBody(own, e, ref, progs, level, held)) made.push(own);
       timed.forEach(function (b) { made.push(b); });
       return made;
     }
@@ -4956,7 +4989,10 @@ function effectBlocks(s, progs, level) {
       if (blk.children.length) made.push(blk);
       return made;
     }
-    if (effectBody(blk, e, ref, progs, level)) { made.push(blk); return made; }
+    if (effectBody(blk, e, ref, progs, level, held)) {
+      made.push(blk);
+      return made;
+    }
     // Nothing of its own: if it is a router, draw what it routes to untraited.
     var base = depth < 2 ? comboBaseBranch(e) : null;
     return base ? blocksFor(base, null, depth + 1) : made;
@@ -4973,6 +5009,13 @@ function effectBlocks(s, progs, level) {
      it straight on. */
   var onUse = {};
   (s.toggleUserEffects || []).forEach(function (e) { onUse[e.id] = 1; });
+
+  /* A skill the reader HOLDS - a toggle, or a channel - keeps its effects for
+     exactly as long as it runs, so none of them expires for leaving combat.
+     The same test the foot uses to print "Toggle Skill" / "Channel Skill". */
+  var held = !!(s.channel ||
+                (s.toggleEffects && s.toggleEffects.length) ||
+                (s.toggleUserEffects && s.toggleUserEffects.length));
 
   refs.slice(0, 6).forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
