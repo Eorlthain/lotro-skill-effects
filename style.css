@@ -1554,3 +1554,32 @@ a.stacklink:hover .stackcount {
 .tip .tipeffwho.expiry {
   color: var(--tip-mods-harm);
 }
+
+/* A payload line - what a carrier hands on, what a reactive effect throws
+   back - reads in the colour of the effect that produced it rather than of
+   the block it landed in. A reactive block holds the friendly answer and the
+   debuff together, so "3s Stun" has to be red inside a green block. Tagged by
+   tagPayload on the line's own link, which is why this is not scoped to
+   .tipeff: the effect's own panel puts these straight into a .tipbody. */
+.tip .tipefflink.harm .tipstat,
+.tip .tipefflink.harm .tipstat .tv {
+  color: var(--tip-mods-harm);
+}
+
+/* A reactive effect's headings - "On any damage:", "25% chance to Reflect
+   effect:" - belong to the buff rather than labelling it, so they take the
+   same green and the same size as the effect lines under them, not the dimmer
+   duration green the carrier groups use for "On application:" and the like. */
+.tip .tipeffwho.react {
+  font-size: 12px;
+  color: var(--tip-mods);
+}
+
+/* The neutral vital row on an effect's own page. `.tip .tl` paints every row
+   the modifier grey and only the heal and harm twins overrode it, so a POWER
+   restore - which is neither, isHeal being about morale - read grey where the
+   skill panel showed it in the effect green. Power of Knowledge (1879369512)
+   is the case. The twins are 0,4,0 and still win. */
+.tip .tl.vital {
+  color: var(--tip-mods);
+}

@@ -237,7 +237,8 @@ function preloadTipEffects(s) {
         return;
       }
       (e.nested || []).forEach(function (n) {
-        if (isOverTimeVia(n.via) || isExpireVia(n.via)) deeper[n.id] = 1;
+        if (isOverTimeVia(n.via) || isExpireVia(n.via) ||
+            isReactiveVia(n.via)) deeper[n.id] = 1;
         if (n.via === COMBO_BASE_VIA) { deeper[n.id] = 1; branches[n.id] = 1; }
       });
     });
@@ -267,8 +268,8 @@ function preloadTipEffects(s) {
    anything but the effect's own fields. */
 function preloadEffectTip(e) {
   var want = (e.nested || []).filter(function (n) {
-    return (isOverTimeVia(n.via) || isExpireVia(n.via)) &&
-           !EFFECT_CACHE[String(n.id)];
+    return (isOverTimeVia(n.via) || isExpireVia(n.via) ||
+            isReactiveVia(n.via)) && !EFFECT_CACHE[String(n.id)];
   });
   return Promise.all(want.map(function (n) {
     return loadRecord("effect", n.id).then(function (rec) {
@@ -3880,6 +3881,7 @@ function effectTooltip(e, progs, D, level) {
   ccLines(e).forEach(function (n) { body.appendChild(n); });
   var bub = bubbleLine(e, progs, level);
   if (bub) tipLine(body, null, bub);
+  reactiveLines(e, progs, level).forEach(function (n) { body.appendChild(n); });
   var v = e.vital;
   if (v) {
     var init = v.initial !== undefined ? v.initial
@@ -3887,13 +3889,14 @@ function effectTooltip(e, progs, D, level) {
     var per = progAt(progs, v.perPulseProgression, level);
     var vcls = isHeal(e) ? "vital heal" : (e.harmful ? "vital harm" : "vital");
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
-                        e.pulseCount ? " on application" : "");
+                        e.pulseCount ? " on application" : "", false);
     if (one) tipLine(body, null, one, vcls);
-    if (e.pulseCount) {
-      var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
-                          overTimeTail(e));
-      if (rep) tipLine(body, null, rep, vcls);
-    }
+    // Whenever there IS a per-pulse value - not only when a pulse COUNT is
+    // set. 727 effects pulse without counting, 639 of them harmful, and every
+    // one of them drew nothing at all.
+    var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
+                        overTimeTail(e), true);
+    if (rep) tipLine(body, null, rep, vcls);
   }
   // Resolve the curve at the chosen level. Without this the panel printed
   // "Scales with level: Finesse Rating" while a level box sat directly
@@ -3935,12 +3938,17 @@ function effectTooltip(e, progs, D, level) {
    `duration`, so the total is that times the pulse count. */
 function overTimeTail(e) {
   var iv = e.interval || e.duration;
-  if (!iv || !e.pulseCount) return "";
+  if (!iv) return "";
   // Always one decimal on the interval - fmt() returns "2" for a whole
   // number, and the client writes "every 2.0 seconds".
   // The client ends this one with a full stop, unlike every other panel line.
-  return " every " + Number(iv).toFixed(1) + " seconds for " +
-         fmt(iv * e.pulseCount) + " seconds.";
+  var every = " every " + Number(iv).toFixed(1) + " seconds";
+  // No pulse count means it is not counting pulses at all: it runs until it
+  // is removed, or for as long as the channel that put it there lasts. Power
+  // of Knowledge (1879369512/13) is the case - there is no "for N seconds" to
+  // write, and demanding one kept the line off the panel entirely.
+  if (!e.pulseCount) return every + ".";
+  return every + " for " + fmt(iv * e.pulseCount) + " seconds.";
 }
 
 /* One heal or damage-over-time line. Two things stop the stored number from
@@ -3954,42 +3962,80 @@ function overTimeTail(e) {
    character's own healing or damage rate, so a heal-over-time curve reading
    0.1 is 0.1 of V, not 0 morale. Those are written with V as the variable, the
    same way skill damage is written with W and A. */
-function vitalLine(e, v, value, vps, variance, tail) {
+/* `overTime` marks the per-pulse line. It changes the wording twice, and both
+   are the client's:
+
+     instant   +193 Power                 Restores 27540 Morale
+     over time Restores 86 - 96 Power     202 - 224 Lightning Damage
+
+   A resource change is written as a signed amount only when it lands at once;
+   the repeating form keeps the verb. And a repeating HARM has no verb at all -
+   it reads like the damage line at the top of a skill panel, "202 - 224
+   Lightning Damage", not "Deals 202 Lightning damage". */
+function vitalLine(e, v, value, vps, variance, tail, overTime) {
   if (!value) return null;
   var harmful = e.harmful;
   var vital = e.vitalType ? enumWord("vitalType", e.vitalType) : "Morale";
-  /* MORALE is the only vital the client writes as a sentence. A resource
-     vital is written as a signed amount - "+193 Power", never "Restores 193
-     Power" - which is how Song of the Hammerhand's expiry reads in game.
-     Applied to Power (239 effects) and to the two war-steed vitals (90), on
-     the reasoning that they are the same kind of resource; only plain Power
-     is confirmed against the game. Morale keeps "Restores" / "Deals", which
-     IS confirmed - Dire Need reads "Restores 30% of maximum Morale". */
-  var signed = vital !== "Morale";
+  /* MORALE is the only vital the client writes as a sentence when it lands at
+     once. A resource vital is "+193 Power", never "Restores 193 Power" - how
+     Song of the Hammerhand's expiry reads in game. Applied to Power (239
+     effects) and the two war-steed vitals (90), on the reasoning that they
+     are the same kind of resource; only plain Power is confirmed. Morale
+     keeps "Restores" / "Deals", which IS confirmed - Dire Need reads
+     "Restores 30% of maximum Morale". */
+  var signed = vital !== "Morale" && !overTime;
   var lead = signed ? (harmful ? "-" : "+")
-                    : (harmful ? "Deals " : "Restores ");
-  var unit = harmful && vital === "Morale" ? "damage" : vital;
+           : harmful ? (overTime ? "" : "Deals ")
+           : "Restores ";
+  var unit = harmful ? (overTime ? harmUnit(e, vital) : (vital === "Morale" ? "damage" : vital))
+                     : vital;
   var type = e.damageType ? enumWord("damageType", e.damageType) + " " : "";
+  /* DEAD END, recorded so it is not tried again: a vitals-per-second
+     multiplier of exactly 1 is NOT a reliable "no scaling" marker. It looked
+     like one - 40 of the 41 curves beside a vps of 1 read above 5 at the cap
+     - but Inspirational Verse - Rider (1879255503) carries vpsInitial 1.0 and
+     vpsPerPulse 0.5 on the SAME curve, worth 23.8, which can only be a
+     coefficient. Gift of Nature's 16400 on a vps of 1 can only be an amount.
+     Same flag, same vital, opposite meanings, and nothing but the magnitude
+     to tell them apart - so the flag is taken at face value. */
+  var scaled = !!vps;
   var span = el("span", "tv");
-  if (v.percent && !vps) {
+  var base = Math.abs(value) * (v.baseMultiplier || 1);
+
+  /* The amount, as the RANGE the client shows. `..._Variance` is the whole
+     spread, so the ends are the value give or take half of it - which is
+     also how describe.py's numToken has always read it. "86 - 96", not
+     "91  +/-10%". */
+  function amount(n) {
+    if (!variance) return num(n);
+    return num(n * (1 - variance / 2)) + " - " + num(n * (1 + variance / 2));
+  }
+
+  if (v.percent && !scaled) {
     span.appendChild(el("span", null,
-      lead + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
-      "% of maximum " + vital +
-      (!signed && harmful ? " as " + type + "damage" : "") + tail));
-  } else if (vps) {
-    var coef = Math.abs(value) * vps * (v.baseMultiplier || 1);
-    span.appendChild(el("span", null, lead));
-    span.appendChild(el("code", "dmg", fmt(coef, 2) + " x V"));
+      lead + fmt(base * 100, 3) + "% of maximum " + vital +
+      (!signed && harmful && !overTime ? " as " + type + "damage" : "") + tail));
+    return span;
+  }
+  if (scaled) {
+    if (lead) span.appendChild(el("span", null, lead));
+    span.appendChild(el("code", "dmg", fmt(base * vps, 2) + " x V"));
     span.appendChild(el("span", null, " " + type + unit + tail));
-  } else {
-    span.appendChild(el("span", null, lead +
-      num(Math.abs(value) * (v.baseMultiplier || 1)) +
-      " " + type + unit + tail));
+    if (variance) {
+      span.appendChild(el("span", "muted",
+                          "  +/-" + fmt(variance * 100, 0) + "%"));
+    }
+    return span;
   }
-  if (variance) {
-    span.appendChild(el("span", "muted", "  +/-" + fmt(variance * 100, 0) + "%"));
-  }
+  span.appendChild(el("span", null,
+    lead + amount(base) + " " + type + unit + tail));
   return span;
+}
+
+/* What a repeating harm calls what it takes off you: the client writes
+   "202 - 224 Lightning Damage" for morale and names the resource otherwise. */
+function harmUnit(e, vital) {
+  return vital === "Morale" ? "Damage" : vital;
 }
 
 /* A bubble soaks damage until the pool it grants is spent. The size of that
@@ -4019,6 +4065,117 @@ function bubbleLine(e, progs, level) {
   var vital = enumWord("vitalType", b.type || "Health") || "Morale";
   return "Applies a damage preventing bubble granting " + amount +
          " temporary " + vital.toLowerCase() + ".";
+}
+
+/* A reactive effect watches for incoming damage and answers it. Wisdom of the
+   Council (effect 1879060814, skill 1879060811) is the shape:
+
+       On any damage:
+       50% chance to Negate 85% damage
+       Reflect 4260 Light damage
+       25% chance to Reflect effect:
+       3s Stun
+       Duration: 10s
+
+   All of it lives on eleven `Effect_ReactiveVital_*` properties that only
+   describe.py read, so the panel showed nothing but the heal the skill applies
+   alongside. 359 effects carry one, 143 of them on a skill panel across 151
+   skills, and 89 of those drew NOTHING at all before this.
+
+   Negate comes before reflect - that is the order the client writes them in,
+   and the reverse of describe.py's prose.
+
+   Confirmed against the game: the heading, "Negate N% damage", "Reflect N
+   <type> damage" and "N% chance to Reflect effect:". The other two legs are
+   this site's own wording on describe.py's reading - "Apply to yourself:" for
+   an `Effect_ReactiveVital_DefenderEffect_Effect` (73 effects carry one alone)
+   and "Removed once it triggers." for `..._RemoveOnSuccessfulProc`. */
+function reactiveHeader(r) {
+  var bits = [];
+  (r.qualifiers || []).forEach(function (q) {
+    // the enum label is the SKILL name for the category - "Melee Skill",
+    // "Tactical Skill" - and "On Melee Skill damage:" says skill twice
+    bits.push((enumWord("damageQualifier", q) || titleCase(q))
+              .replace(/\s+Skill$/, ""));
+  });
+  // "ALL" is the catch-all rather than a damage type, and the client says
+  // "any" for it: 306 of the 359 are written that way.
+  (r.on || []).forEach(function (t) {
+    if (t !== "ALL") bits.push(enumWord("damageType", t) || titleCase(t));
+  });
+  return "On " + (bits.length ? bits.join(", ") : "any") +
+         (r.skillOnly ? " skill hit" : " damage") +
+         (r.casterOnly ? " from the source of this effect" : "") + ":";
+}
+
+function reactiveAmount(leg, progs, level) {
+  if (leg.percent) {
+    var pv = leg.value !== undefined ? leg.value
+           : progAt(progs, leg.progression, level);
+    return pv === null || pv === undefined ? null
+      : fmt(Math.abs(pv) * 100, 3) + "%";
+  }
+  var v = leg.value !== undefined ? leg.value
+        : progAt(progs, leg.progression, level);
+  return v === null || v === undefined ? null : num(Math.abs(v));
+}
+
+function reactiveChance(leg) {
+  return leg.chance === undefined ? ""
+    : fmt(leg.chance * 100, 3) + "% chance to ";
+}
+
+/* A leg with a flat zero chance never fires - the same rule the panel already
+   applies to an effect whose own application chance is zero. Mearas-lore
+   (1879242033) reads "0% chance to Apply to yourself:" without it. */
+function reactiveFires(leg) {
+  return !!leg && leg.chance !== 0;
+}
+
+function reactiveLines(e, progs, level) {
+  var r = e.reactive;
+  if (!r) return [];
+  var out = [];
+  function say(text) { out.push(el("div", "tipstat", text)); }
+  // "react" reads these in the effect green rather than the dimmer label
+  // colour the carrier groups use - they are part of the buff, not a caption
+  function head(text) { out.push(el("div", "tipeffwho react", text)); }
+  function payload(leg, label) {
+    var ne = EFFECT_CACHE[String(leg.id)];
+    if (!ne) return;
+    var host = el("div");
+    effectBody(host, ne, null, progs, level);
+    if (!host.children.length) return;
+    tagPayload(host, 0, ne);
+    head(reactiveChance(leg) + label);
+    // push does NOT detach the node the way appendChild does, so the child
+    // has to be removed by hand or the loop never ends
+    while (host.firstChild) out.push(host.removeChild(host.firstChild));
+  }
+
+  var amt;
+  if (reactiveFires(r.negate)) {
+    amt = reactiveAmount(r.negate, progs, level);
+    if (amt) say(reactiveChance(r.negate) + "Negate " + amt + " damage");
+  }
+  if (reactiveFires(r.reflect)) {
+    amt = reactiveAmount(r.reflect, progs, level);
+    if (amt) {
+      say(reactiveChance(r.reflect) + "Reflect " + amt +
+          (r.reflect.damageType
+            ? " " + (enumWord("damageType", r.reflect.damageType) ||
+                     titleCase(r.reflect.damageType))
+            : "") + " damage");
+    }
+  }
+  if (reactiveFires(r.reflectEffect)) {
+    payload(r.reflectEffect, "Reflect effect:");
+  }
+  if (reactiveFires(r.selfEffect)) payload(r.selfEffect, "Apply to yourself:");
+  if (r.removeOnProc && out.length) say("Removed once it triggers.");
+  // the heading only where something came of it
+  if (out.length) out.unshift(el("div", "tipeffwho react", reactiveHeader(r)));
+  return out;
 }
 
 /* The property that has to supply an application chance, and the chance it
@@ -4442,6 +4599,22 @@ function overTimeGroups(e, withInitial) {
   return groups.length ? groups : null;
 }
 
+/* A payload line reads in the colour of the effect that PRODUCED it, not of
+   the block it happens to land in. A reactive effect's block holds both the
+   friendly answer (Negate, Reflect damage) and the debuff it throws back, so
+   Wisdom of the Council's "3s Stun" sat in the green of the block instead of
+   the red every other crowd-control line reads in.
+
+   Only the harm case is tagged per line. Heal is already handled a level up:
+   groupBlock puts `heal` on the whole block when any payload restores morale,
+   and that is the documented rule for a carrier's colour. */
+function tagPayload(host, from, ne) {
+  if (!ne.harmful) return;
+  for (var i = from; i < host.children.length; i++) {
+    host.children[i].className += " harm";
+  }
+}
+
 /* A heading and the effects under it. Shared by every group a panel draws -
    the two over-time lists and the on-expiry list - because they differ only
    in the words and in whether the carrier's own total closes the block.
@@ -4457,7 +4630,9 @@ function groupBlock(e, g, progs, level, withDuration) {
     // A carrier is only a wrapper, so what it hands on decides the colour -
     // the heal case only, as everywhere else.
     if (isHeal(ne)) heal = true;
+    var before = host.children.length;
     effectBody(host, ne, null, progs, level);
+    tagPayload(host, before, ne);
   });
   if (!host.children.length) return null;
   var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
@@ -4509,6 +4684,12 @@ var EXPIRE_VIA = "EffectGenerator_Countdown_ExpireEffectList";
 
 function isExpireVia(via) {
   return (via || "").indexOf(EXPIRE_VIA) !== -1;
+}
+
+/* What a reactive effect throws back, or puts on you - see reactiveLines. */
+function isReactiveVia(via) {
+  return (via || "").indexOf("Effect_ReactiveVital_AttackerEffect_Effect") !== -1 ||
+         (via || "").indexOf("Effect_ReactiveVital_DefenderEffect_Effect") !== -1;
 }
 
 function expireBlocks(e, progs, level) {
@@ -4609,14 +4790,17 @@ function effectSentence(e) {
    carries one; a pulsing effect's stored duration is the INTERVAL, so the span
    is that times the pulse count. */
 function durationNode(e, ref) {
+  // Permanent WINS, the way effectTooltip's foot has always had it: such an
+  // effect still carries an interval, and printing that as its duration says
+  // Power of Knowledge lasts a second when it never expires on its own.
+  if (e.permanent) {
+    return el("div", "tipdur",
+              e.combatOnly ? combatOnlyNote() : "Duration: permanent");
+  }
   var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
   if (e.pulseCount && dur) dur = dur * e.pulseCount;
   if (dur !== undefined && dur > 0) {
     return el("div", "tipdur", "Duration: " + secs(dur));
-  }
-  if (e.permanent) {
-    return el("div", "tipdur",
-              e.combatOnly ? combatOnlyNote() : "Duration: permanent");
   }
   return null;
 }
@@ -4642,6 +4826,7 @@ function effectBody(blk, e, ref, progs, level) {
   var lines = ccLines(e);
   var bub = bubbleLine(e, progs, level);
   if (bub) lines.push(el("div", "tipstat", bub));
+  reactiveLines(e, progs, level).forEach(function (n) { lines.push(n); });
   // What it does to your morale or power. Only the effect's OWN panel used to
   // print this, so a heal skill's tooltip - Chord of Salvation, Raise the
   // Spirit - never said how much it heals, and the block was dropped for
@@ -4651,13 +4836,11 @@ function effectBody(blk, e, ref, progs, level) {
     var init = v.initial !== undefined ? v.initial
              : progAt(progs, v.initialProgression, level);
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
-                        e.pulseCount ? " on application" : "");
+                        e.pulseCount ? " on application" : "", false);
     if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); lines.push(vl); }
-    if (e.pulseCount) {
-      var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
-                          v.vpsPerPulse, v.perPulseVariance, overTimeTail(e));
-      if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); lines.push(vr); }
-    }
+    var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
+                        v.vpsPerPulse, v.perPulseVariance, overTimeTail(e), true);
+    if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); lines.push(vr); }
   }
   (e.stats || []).forEach(function (st) {
     var line = statLine(resolveStat(st, progs, level), "level");
@@ -4679,7 +4862,12 @@ function effectBody(blk, e, ref, progs, level) {
   if (!lines.length) return 0;
   var dn = durationNode(e, ref);
   if (dn) lines.push(dn);
-  lines.forEach(function (n) { blk.appendChild(tipEffLink(n, e.id)); });
+  // A line that already carries its own link keeps it - a reactive effect's
+  // payload is built by effectBody one level down and points at the effect it
+  // reflects, and wrapping it again would nest an <a> inside an <a>.
+  lines.forEach(function (n) {
+    blk.appendChild(n.tagName === "A" ? n : tipEffLink(n, e.id));
+  });
   return blk.children.length - before;
 }
 
@@ -4774,13 +4962,29 @@ function effectBlocks(s, progs, level) {
     return base ? blocksFor(base, null, depth + 1) : made;
   }
 
+  /* The caster's half of a toggle or a channel: what YOU get while it runs, as
+     against what the target is taking. The client heads it "on use:" - Power
+     of Knowledge (1879238096) drains the target for lightning and hands you
+     power back under that line.
+
+     Only Skill_Toggle_User_Effect_List, which is 43 skills and 25 with
+     anything to draw. A plain Skill_User_Effect_List gets no heading: Epic
+     Conclusion's "Returns to Neutral Attunement" is one and the client runs
+     it straight on. */
+  var onUse = {};
+  (s.toggleUserEffects || []).forEach(function (e) { onUse[e.id] = 1; });
+
   refs.slice(0, 6).forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
     if (!e) return;
     // no application chance of its own: it never lands unless something
     // grants the chance, so it is listed below the panel instead
     if (e.probability === 0) return;
-    blocksFor(e, ref, 0).forEach(function (b) { out.push(b); });
+    var made = blocksFor(e, ref, 0);
+    if (made.length && onUse[ref.id]) {
+      made[0].insertBefore(el("div", "tipeffwho", "on use:"), made[0].firstChild);
+    }
+    made.forEach(function (b) { out.push(b); });
   });
   // the panel quotes at most six, the way the client's box is bounded - but
   // saying so beats letting the rest disappear without a word
@@ -4854,6 +5058,25 @@ function statWording(st, meta) {
   d = expandSelector(d);
   if (d.indexOf("*") === -1) return d;
   if (st.value === undefined || st.value === null) return null;
+  /* A wording whose LAST placeholder is followed by no words at all wants the
+     property's NAME there, not the value a second time. Duty Bound (effect
+     1879084065) words its Health_MaxLevel modifier "+ *   * " and the client
+     writes "+5% Maximum Morale"; pasting the amount into both gave the
+     nonsense "+5% x1.05".
+
+     Two placeholders alone do not mean this - the other multi-placeholder
+     wordings spell out what each one is ("+ * Glory Gain\n+ * Commendation
+     Gain", "+ * Attack Damage\n+ * Savage Bleed Damage") and want the value
+     in every one of them. The trailing test is what separates the two, and it
+     matches exactly 14 modifier lines on 12 records: the racial Maximum
+     Morale and Power buffs (Duty Bound, Motivated, Power of the Eldar, Mood -
+     Max Morale Bonus), Weakening Wheeze's two regen debuffs, and
+     Mischievous's "- * s  * " -> "-5s Riddle Cooldown". */
+  var tailName = "";
+  if (d.split("*").length > 2 && /\*[^A-Za-z0-9*]*$/.test(d)) {
+    d = d.replace(/\*[^A-Za-z0-9*]*$/, "");
+    tailName = " " + ((meta && meta.n) || st.stat || "");
+  }
   d = d.replace(/([-+x])[ \t]*\*/g, function (_, sign) {
     // A wording that puts a SIGN in front of its placeholder is asking for a
     // delta, not a factor: "- * Outgoing Damage" on a Multiply of 0.99 is the
@@ -4871,7 +5094,7 @@ function statWording(st, meta) {
     return sign + amt;
   });
   d = d.replace(/\*/g, statAmount(st, meta, true));
-  return d.replace(/[ \t]{2,}/g, " ");
+  return (d + tailName).replace(/[ \t]{2,}/g, " ").trim();
 }
 
 /* One line of a tooltip: "+30% Advance Damage". The label and the percentage
