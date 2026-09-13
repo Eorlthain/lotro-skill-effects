@@ -1511,3 +1511,28 @@ a.stacklink:hover .stackcount {
   margin-right: 0;
   margin-left: 5px;
 }
+/* The panel that follows the pointer. It IS the record's own tooltip - the
+   same .tip markup the page builds - so all this adds is where it sits.
+   pointer-events must stay off: the box lands under the pointer, and a box
+   that took the mouse would count as leaving the link it belongs to and
+   close itself the instant it appeared. */
+#hovertip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 60;
+  pointer-events: none;
+  max-height: calc(100vh - 16px);
+  overflow: hidden;
+  filter: drop-shadow(0 6px 18px rgba(0, 0, 0, .55));
+}
+
+#hovertip[hidden] { display: none; }
+
+/* Taller than the window: pinned to the top and clipped. The fade is the only
+   thing saying there is more, since nothing here can be scrolled - the page
+   itself is one click away. */
+#hovertip.cut {
+  -webkit-mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
+}

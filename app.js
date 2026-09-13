@@ -237,11 +237,25 @@ function preloadTipEffects(s) {
         return;
       }
       (e.nested || []).forEach(function (n) {
-        if (n.via === COMBO_BASE_VIA) deeper[n.id] = 1;
+        if (n.via === COMBO_BASE_VIA || isOverTimeVia(n.via)) deeper[n.id] = 1;
       });
     });
     return fetchAll(Object.keys(deeper));
   });
+}
+
+/* The same one level down, for an EFFECT's own page. Nothing was preloaded
+   there at all, because until over-time groups the effect panel never quoted
+   anything but the effect's own fields. */
+function preloadEffectTip(e) {
+  var want = (e.nested || []).filter(function (n) {
+    return isOverTimeVia(n.via) && !EFFECT_CACHE[String(n.id)];
+  });
+  return Promise.all(want.map(function (n) {
+    return loadRecord("effect", n.id).then(function (rec) {
+      if (rec) EFFECT_CACHE[String(rec.id)] = rec;
+    });
+  }));
 }
 
 /* A trait's rank block quotes the effects it applies - "On every Swordplay
@@ -3871,6 +3885,11 @@ function effectTooltip(e, progs, D, level) {
   });
   if (body.children.length) box.appendChild(body);
 
+  // What it keeps doing while it is on you. The initial list is deliberately
+  // left out here - see overTimeGroups.
+  overTimeBlocks(e, progs, level, { withInitial: false, duration: false })
+    .forEach(function (b) { box.appendChild(b); });
+
   // Effect_TimeDisplay_Base is the last of the client's four rows, and the
   // panel ends there. Chance, cure type, stacking and what applies it are all
   // on the page below - the tooltip is the tooltip.
@@ -4236,13 +4255,36 @@ function usesLevel(e) {
 /* Each effect the skill puts up gets its own block, the way the game shows it:
    the effect's own wording, then one line per property it changes, named and
    formatted the way PropertyMetaData says, then the duration. */
-/* A dispel-by-resist effect has no modifiers, no duration and no wording of
-   its own - the whole of it is the sentence the client writes in red:
-   "Removes up to 1 Corruption effect from the target." Cry of the Valar and
-   the other corruption removals carried it as a bare name with nothing under
-   it, so the panel never said what the skill actually does. */
+/* A dispel-by-resist effect has no modifiers and no duration - the whole of it
+   is one sentence. Cry of the Valar and the other removals carried it as a
+   bare name with nothing under it, so the panel never said what the skill
+   actually does.
+
+   Where the author WROTE that sentence it wins, and the generated one is not
+   built at all. 9 of the 81 dispels carry a `Effect_Definition_Description`,
+   and in every one of them it says something the categories cannot:
+
+     Remove Corruption (1879111268, 10 skills)
+       own:  Removes 1 tier of up to 3 different Corruption effects ...
+       ours: Removes up to 3 Corruption effects from the target.
+
+   A corruption is removed a TIER at a time and the data has no field saying
+   so. The rest collapse the raw category enums into the words the client
+   actually prints - `[Disease, Physical, Wound, Cry, Song, Fear, Poison,
+   Magic]` is "Physical, Cry, Song, or Tactical" to a reader. 22 skills.
+
+   Its colour follows the same split: the author's sentence is flavour and
+   reads in the description colour like every other `effectSentence`, while
+   the generated line keeps the red/green of what the dispel does - red when
+   it strips a buff off an enemy, heal green when it cures an ally. */
+function dispelIsOwn(e) {
+  return !!(e.dispelCategories && e.dispelCategories.length &&
+            (e.desc || e.descOverride));
+}
+
 function dispelWording(e, level) {
   if (!e.dispelCategories || !e.dispelCategories.length) return null;
+  if (dispelIsOwn(e)) return e.desc || e.descOverride;
   var n = e.dispelMax || 1;
   var out = "Removes up to " + n + " " +
     e.dispelCategories.map(function (c) {
@@ -4310,6 +4352,101 @@ function carrierLines(e) {
     };
   }
   return null;
+}
+
+/* An over-time applier is a carrier that fires more than once. It holds two
+   lists - one applied the moment it lands, one applied on every pulse - and
+   the client heads each with when it happens rather than who gets it:
+
+     On application:
+     Removes up to 1 Disease, Wound, Fear, Poison effect ... from the target.
+     Duration: 4s
+
+     Every 2 seconds:
+     Removes up to 1 Disease, Wound, Fear, Poison effect ... from the target.
+     Duration: 4s
+
+   That is Scribe a New Ending (skill 1879232717 -> effect 1879265201 ->
+   1879265200), which had NOTHING on either panel: the carrier changes no
+   property and carries no wording, so both the skill's block and the effect's
+   own body came out empty. 1,260 effects are built this way, 380 of them on a
+   skill panel.
+
+   The two lists are separate blocks, each ending in how long the whole thing
+   runs - the carrier's own interval times its pulse count, not the payload's
+   duration. Where the payload HAS a duration of its own that one stands and
+   the carrier's is left off, or the block would end in two Duration rows
+   saying different things (261 of 762 payloads).
+
+   On the effect's own page only the pulse list is shown: the effect is already
+   on you there, so what it did on landing is in the past. The page's own "What
+   it does" prose below still words the whole thing, initial application
+   included. */
+var AOT_INITIAL = "Effect_ApplyOverTime_Initial_Applied_Effect_Array";
+var AOT_PULSE = "Effect_ApplyOverTime_Applied_Effect_Array";
+
+function isOverTimeVia(via) {
+  var v = via || "";
+  return v.indexOf(AOT_INITIAL) !== -1 || v.indexOf(AOT_PULSE) !== -1;
+}
+
+function overTimeGroups(e, withInitial) {
+  var init = [], pulse = [];
+  (e.nested || []).forEach(function (n) {
+    var v = n.via || "";
+    // One nested entry usually names BOTH routes - normalize merges duplicate
+    // references and joins the routes onto `via` - so these are not exclusive.
+    // Neither key is a substring of the other ("..._Initial_Applied_..." vs
+    // "..._Applied_..."), so each test stands on its own.
+    if (v.indexOf(AOT_INITIAL) !== -1) init.push(n);
+    if (v.indexOf(AOT_PULSE) !== -1) pulse.push(n);
+  });
+  var groups = [];
+  if (withInitial && init.length) {
+    groups.push({ header: "On application:", nested: init });
+  }
+  if (pulse.length) {
+    var iv = e.interval || e.duration;
+    groups.push({
+      header: iv ? "Every " + fmt(iv) + " second" + (iv === 1 ? "" : "s") + ":"
+                 : "On each pulse:",
+      nested: pulse
+    });
+  }
+  return groups.length ? groups : null;
+}
+
+/* One block per group. `duration` asks for the carrier's own total to close
+   each block; the effect's own panel already prints that in its foot. */
+function overTimeBlocks(e, progs, level, opts) {
+  var groups = overTimeGroups(e, opts.withInitial);
+  if (!groups) return [];
+  var out = [];
+  groups.forEach(function (g) {
+    var host = el("div");
+    var heal = false;
+    g.nested.forEach(function (n) {
+      var ne = EFFECT_CACHE[String(n.id)];
+      if (!ne) return;
+      // A carrier is only a wrapper, so what it hands on decides the colour -
+      // the heal case only, as everywhere else.
+      if (isHeal(ne)) heal = true;
+      effectBody(host, ne, null, progs, level);
+    });
+    // Build the payload first: with nothing in it the header would announce
+    // effects that never arrive.
+    if (!host.children.length) return;
+    var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
+                        (heal ? " heal" : ""));
+    blk.appendChild(el("div", "tipeffwho", g.header));
+    while (host.firstChild) blk.appendChild(host.firstChild);
+    if (opts.duration && !blk.querySelector(".tipdur")) {
+      var dn = durationNode(e, null);
+      if (dn) blk.appendChild(dn);
+    }
+    out.push(blk);
+  });
+  return out;
 }
 
 /* A combo effect is a server-side router, not something that happens to you:
@@ -4396,6 +4533,22 @@ function effectSentence(e) {
   return e.desc || e.descOverride || null;
 }
 
+/* How long a block's effect lasts. The reference's own duration wins where it
+   carries one; a pulsing effect's stored duration is the INTERVAL, so the span
+   is that times the pulse count. */
+function durationNode(e, ref) {
+  var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
+  if (e.pulseCount && dur) dur = dur * e.pulseCount;
+  if (dur !== undefined && dur > 0) {
+    return el("div", "tipdur", "Duration: " + secs(dur));
+  }
+  if (e.permanent) {
+    return el("div", "tipdur",
+              e.combatOnly ? combatOnlyNote() : "Duration: permanent");
+  }
+  return null;
+}
+
 function effectBody(blk, e, ref, progs, level) {
   var before = blk.children.length;
   var dispel = dispelWording(e, level);
@@ -4404,8 +4557,12 @@ function effectBody(blk, e, ref, progs, level) {
     // how the client draws it, and there is nothing else to put in the box.
     // Red when it strips a buff off an enemy (Cry of the Valar), the heal
     // green when it cures an ally (Story of Courage) - the effect's own
-    // harmful flag decides, and hard-coding red got the cures wrong.
-    var dl = el("a", "tipstat dispel" + (e.harmful ? "" : " heal"), dispel);
+    // harmful flag decides, and hard-coding red got the cures wrong. The
+    // author's own sentence is flavour instead, so it takes the description
+    // colour and deliberately carries no `tipstat` - see dispelWording.
+    var dl = el("a", dispelIsOwn(e)
+      ? "dispel tipeffflavour"
+      : "tipstat dispel" + (e.harmful ? "" : " heal"), dispel);
     dl.href = urlFor("effect/" + e.id);
     blk.appendChild(dl);
     return blk.children.length - before;
@@ -4448,14 +4605,8 @@ function effectBody(blk, e, ref, progs, level) {
   }
   // A duration on its own says nothing without the line it belongs to.
   if (!lines.length) return 0;
-  var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
-  if (e.pulseCount && dur) dur = dur * e.pulseCount;
-  if (dur !== undefined && dur > 0) {
-    lines.push(el("div", "tipdur", "Duration: " + secs(dur)));
-  } else if (e.permanent) {
-    lines.push(el("div", "tipdur",
-                  e.combatOnly ? combatOnlyNote() : "Duration: permanent"));
-  }
+  var dn = durationNode(e, ref);
+  if (dn) lines.push(dn);
   lines.forEach(function (n) { blk.appendChild(tipEffLink(n, e.id)); });
   return blk.children.length - before;
 }
@@ -4470,6 +4621,20 @@ function effectBlocks(s, progs, level) {
   (s.toggleEffects || []).forEach(function (e) { refs.push(e); });
   (s.toggleUserEffects || []).forEach(function (e) { refs.push(e); });
 
+  // One effect, one block. A toggle regularly names the same effect in both
+  // Skill_Toggle_Effect_List and Skill_Toggle_User_Effect_List - 167 such
+  // repeats across 121 skills - and the panel drew it twice. Rousing Words
+  // (1879109284) printed "Every 3 seconds: +1 Healing Attunement" two rows
+  // running. Deduped BEFORE the cap, so the "and N more" count is right and
+  // a repeat does not spend one of the six slots. Exactly one of the 167
+  // carries anything beyond the id; the first spelling wins.
+  var byId = {};
+  refs = refs.filter(function (ref) {
+    if (byId[ref.id]) return false;
+    byId[ref.id] = 1;
+    return true;
+  });
+
   refs.slice(0, 6).forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
     if (!e) return;
@@ -4478,6 +4643,21 @@ function effectBlocks(s, progs, level) {
     if (e.probability === 0) return;
     // What it does to a target it harms reads red; what it gives you reads
     // pale. Everything was green, so a slow looked like a buff.
+    // An over-time applier is two blocks, not one - what it does on landing
+    // and what it does on every pulse, each under its own heading.
+    var timed = overTimeBlocks(e, progs, level,
+                               { withInitial: true, duration: true });
+    if (timed.length) {
+      // Additive, not instead of: 23 of these carriers do say something of
+      // their own ("Puts on your costume!" on the 20 Guise skills,
+      // "+1 Focus every 5 Seconds" on Stance: Precision) and an early return
+      // threw it away.
+      var own = el("div", "tipeff" + (e.harmful ? " harm" : "") +
+                          (isHeal(e) ? " heal" : ""));
+      if (effectBody(own, e, ref, progs, level)) out.push(own);
+      timed.forEach(function (b) { out.push(b); });
+      return;
+    }
     var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
                        (isHeal(e) ? " heal" : ""));
     var carrier = carrierLines(e);
@@ -6065,6 +6245,8 @@ function renderChanges(ch) {
 /* ---------------- routing ---------------- */
 
 function route() {
+  // a panel left hanging over a page that is being replaced
+  hoverHide();
   var detail = document.getElementById("detail");
   var path = routePath();
   // on a phone the list and the page cannot both have the screen; once
@@ -6324,7 +6506,7 @@ function route() {
       detail.appendChild(el("div", "empty", "No " + kind + " with id " + id + "."));
       return;
     }
-    return (kind === "skill" ? preloadTipEffects(rec) : Promise.resolve())
+    return (kind === "skill" ? preloadTipEffects(rec) : preloadEffectTip(rec))
       .then(function () { finish(res, rec); });
   });
 
@@ -6534,4 +6716,188 @@ function migrateHash() {
   var m = /^#\/(.*)$/.exec(location.hash || "");
   if (!m) return;
   history.replaceState({}, "", urlFor(m[1]));
+}
+
+/* ---------------- the panel that follows the pointer ---------------- */
+
+/* Every link on the site names a record that has a panel of its own, and until
+   now the only way to read one was to open the page. Hovering anything that
+   points at a skill, an effect or a trait - the text, the link, or the icon
+   beside it - draws that record's panel where the pointer is, built by the
+   SAME function the record's own page uses. There is no second wording to
+   keep in step with the first: change tooltipPanel and the hover changes too.
+
+   Only those three kinds. Items, sets, traceries, classes, properties and
+   stacking groups have pages but no panel, and inventing one here would be
+   exactly the second wording this avoids.
+
+   Everything a panel needs is the set the record route already loads, and all
+   of it is behind a cached promise - so the first hover may fetch one shard
+   and every hover after it is instant. */
+
+var HOVER_DELAY = 180;   // long enough that crossing a list opens nothing
+var HOVER_GAP = 14;      // clear of the pointer on both axes
+var HOVER = { box: null, token: 0, timer: null, key: null, x: 0, y: 0 };
+
+/* The record a link names, or null where it names something else. Deliberately
+   the same checks the click handler makes - a target, a download, another
+   origin and an off-site scheme are all somebody else's link. */
+function hoverRoute(a) {
+  if (!a || a.target || a.hasAttribute("download")) return null;
+  var href = a.getAttribute("href");
+  if (!href || href.charAt(0) === "#" || /^[a-z]+:/i.test(href)) return null;
+  var u;
+  try { u = new URL(a.href); } catch (e) { return null; }
+  if (u.origin !== location.origin || u.pathname.indexOf(BASE) !== 0) return null;
+  var m = /^(skill|effect|trait)\/(\d+)$/.exec(u.pathname.slice(BASE.length));
+  return m ? { kind: m[1], id: parseInt(m[2], 10) } : null;
+}
+
+/* What the pointer is over. A link answers for itself - a search row wraps its
+   own icon, so that case is covered too. Every list built by linkList puts the
+   icon BESIDE the link rather than inside it, so an image with no link of its
+   own asks the row it sits in. */
+function hoverSubject(node) {
+  if (!node || node.nodeType !== 1) return null;
+  var a = node.closest ? node.closest("a[href]") : null;
+  // a link to something without a panel is not a miss to fall through from
+  if (a) return hoverRoute(a);
+  if (node.tagName === "IMG" && node.parentElement) {
+    return hoverRoute(node.parentElement.querySelector("a[href]"));
+  }
+  return null;
+}
+
+/* The side files a panel reads, assigned to the same globals the record route
+   assigns them to. Every one resolves to the object the route would have put
+   there, so doing it from a hover cannot disagree with the page underneath. */
+function hoverData() {
+  return Promise.all([progressions(), classData(), modSources(),
+                      sourceClasses(), gambitData(), propertyData(),
+                      displayTypeData(), itemSetData(), stackingData(),
+                      skillChannelData(), pipData(), comboFlagData()])
+    .then(function (res) {
+      SRC_CLASS = res[3] || {};
+      GAMBITS = res[4] || {};
+      PROPS = res[5] || {};
+      DISPLAY_TYPES = res[6] || {};
+      SETS = res[7] || {};
+      STACKING = res[8] || {};
+      CHANNELS = res[9] || {};
+      PIPS = res[10] || {};
+      COMBOFLAGS = res[11] || {};
+      return { progs: res[0] || {}, D: res[1] };
+    });
+}
+
+/* One panel, built exactly as its page builds it - the same preload, the same
+   level. A skill reads its own top level the way its page does; an effect and
+   a trait read the level box's preference against the cap. */
+function hoverPanel(sub) {
+  return hoverData().then(function (ctx) {
+    var progs = ctx.progs, D = ctx.D;
+    if (sub.kind === "trait") {
+      var t = D && D.traits && D.traits[String(sub.id)];
+      if (!t) return null;
+      return preloadTraitEffects(t).then(function () {
+        return traitTooltip(t, progs, D, preferredLevel(LEVEL_CAP),
+                            traitMaxRank(t, progs));
+      });
+    }
+    return loadRecord(sub.kind, sub.id).then(function (rec) {
+      if (!rec) return null;
+      if (sub.kind === "effect") {
+        return preloadEffectTip(rec).then(function () {
+          return effectTooltip(rec, progs, D, preferredLevel(LEVEL_CAP));
+        });
+      }
+      return preloadTipEffects(rec).then(function () {
+        return tooltipPanel(rec, progs, preferredLevel(topLevel(rec, progs)));
+      });
+    });
+  });
+}
+
+/* Beside the pointer, flipped to whichever side it fits. A panel taller than
+   the window is pinned to the top and clipped, with a fade saying so - it
+   cannot be scrolled, because the box takes no pointer events at all and must
+   not, or moving onto it would count as leaving the link it belongs to. */
+function hoverPlace() {
+  var box = HOVER.box;
+  var w = box.offsetWidth, h = box.offsetHeight;
+  var vw = document.documentElement.clientWidth;
+  var vh = document.documentElement.clientHeight;
+  var left = HOVER.x + HOVER_GAP;
+  if (left + w > vw - 4) left = HOVER.x - HOVER_GAP - w;
+  if (left < 4) left = Math.max(4, vw - w - 4);
+  var top = HOVER.y + HOVER_GAP;
+  if (top + h > vh - 4) top = HOVER.y - HOVER_GAP - h;
+  if (top < 4) top = 4;
+  box.style.left = Math.round(left) + "px";
+  box.style.top = Math.round(top) + "px";
+  box.classList.toggle("cut", box.scrollHeight > box.clientHeight + 1);
+}
+
+function hoverHide() {
+  HOVER.token++;
+  if (HOVER.timer) { clearTimeout(HOVER.timer); HOVER.timer = null; }
+  HOVER.key = null;
+  if (HOVER.box) {
+    HOVER.box.hidden = true;
+    HOVER.box.textContent = "";
+    HOVER.box.classList.remove("cut");
+  }
+}
+
+function hoverOpen(sub, token) {
+  HOVER.timer = null;
+  hoverPanel(sub).then(function (panel) {
+    // the pointer has moved on: this answer is for a hover that is over
+    if (token !== HOVER.token || !panel) return;
+    if (!HOVER.box) {
+      HOVER.box = el("div");
+      HOVER.box.id = "hovertip";
+      HOVER.box.hidden = true;
+      document.body.appendChild(HOVER.box);
+    }
+    HOVER.box.textContent = "";
+    HOVER.box.appendChild(panel);
+    HOVER.box.hidden = false;
+    hoverPlace();
+  }, function () { /* a shard that would not load is not worth a message */ });
+}
+
+if (window.matchMedia &&
+    window.matchMedia("(hover: hover) and (pointer: fine)").matches) {
+  document.addEventListener("mouseover", function (ev) {
+    var sub = hoverSubject(ev.target);
+    if (!sub) { if (HOVER.key) hoverHide(); return; }
+    var key = sub.kind + "/" + sub.id;
+    // the icon and the name beside it are one subject, so crossing between
+    // them must not restart the wait
+    if (key === HOVER.key) return;
+    hoverHide();
+    HOVER.key = key;
+    HOVER.x = ev.clientX;
+    HOVER.y = ev.clientY;
+    var token = HOVER.token;
+    HOVER.timer = setTimeout(function () { hoverOpen(sub, token); },
+                             HOVER_DELAY);
+  });
+  // Track the pointer only while the panel is still coming: once it is up it
+  // stays where it was drawn, the way the game's own tooltips do.
+  document.addEventListener("mousemove", function (ev) {
+    if (HOVER.key && (!HOVER.box || HOVER.box.hidden)) {
+      HOVER.x = ev.clientX;
+      HOVER.y = ev.clientY;
+    }
+  });
+  document.addEventListener("mouseleave", hoverHide);
+  document.addEventListener("click", hoverHide, true);
+  // capture, so a scroll inside the results list or the page counts too
+  document.addEventListener("scroll", hoverHide, true);
+  window.addEventListener("blur", hoverHide);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") hoverHide();
+  });
 }
