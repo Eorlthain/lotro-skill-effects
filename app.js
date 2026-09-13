@@ -228,7 +228,7 @@ function preloadTipEffects(s) {
   // router's untraited branch is printed at the same depth, for the same
   // reason - see comboBaseBranch.
   return fetchAll(Object.keys(ids)).then(function () {
-    var deeper = {};
+    var deeper = {}, branches = {};
     Object.keys(ids).forEach(function (id) {
       var e = EFFECT_CACHE[id];
       if (!e) return;
@@ -237,10 +237,28 @@ function preloadTipEffects(s) {
         return;
       }
       (e.nested || []).forEach(function (n) {
-        if (n.via === COMBO_BASE_VIA || isOverTimeVia(n.via)) deeper[n.id] = 1;
+        if (isOverTimeVia(n.via) || isExpireVia(n.via)) deeper[n.id] = 1;
+        if (n.via === COMBO_BASE_VIA) { deeper[n.id] = 1; branches[n.id] = 1; }
       });
     });
-    return fetchAll(Object.keys(deeper));
+    return fetchAll(Object.keys(deeper)).then(function () {
+      // A router's branch is drawn as if the skill applied it directly, so
+      // where the branch is ITSELF a carrier its payload is one further step
+      // away and has to be in hand too. Only branches go this deep: the set
+      // is small, and a carrier's payload never needs a third level.
+      var third = {};
+      Object.keys(branches).forEach(function (id) {
+        var b = EFFECT_CACHE[id];
+        if (!b) return;
+        var wrapper = !!carrierLines(b);
+        (b.nested || []).forEach(function (n) {
+          if (wrapper || isOverTimeVia(n.via) || isExpireVia(n.via)) {
+            third[n.id] = 1;
+          }
+        });
+      });
+      return fetchAll(Object.keys(third));
+    });
   });
 }
 
@@ -249,7 +267,8 @@ function preloadTipEffects(s) {
    anything but the effect's own fields. */
 function preloadEffectTip(e) {
   var want = (e.nested || []).filter(function (n) {
-    return isOverTimeVia(n.via) && !EFFECT_CACHE[String(n.id)];
+    return (isOverTimeVia(n.via) || isExpireVia(n.via)) &&
+           !EFFECT_CACHE[String(n.id)];
   });
   return Promise.all(want.map(function (n) {
     return loadRecord("effect", n.id).then(function (rec) {
@@ -3889,6 +3908,7 @@ function effectTooltip(e, progs, D, level) {
   // left out here - see overTimeGroups.
   overTimeBlocks(e, progs, level, { withInitial: false, duration: false })
     .forEach(function (b) { box.appendChild(b); });
+  expireBlocks(e, progs, level).forEach(function (b) { box.appendChild(b); });
 
   // Effect_TimeDisplay_Base is the last of the client's four rows, and the
   // panel ends there. Chance, cure type, stacking and what applies it are all
@@ -3937,26 +3957,32 @@ function overTimeTail(e) {
 function vitalLine(e, v, value, vps, variance, tail) {
   if (!value) return null;
   var harmful = e.harmful;
-  var word = harmful ? "Deals" : "Restores";
   var vital = e.vitalType ? enumWord("vitalType", e.vitalType) : "Morale";
+  /* MORALE is the only vital the client writes as a sentence. A resource
+     vital is written as a signed amount - "+193 Power", never "Restores 193
+     Power" - which is how Song of the Hammerhand's expiry reads in game.
+     Applied to Power (239 effects) and to the two war-steed vitals (90), on
+     the reasoning that they are the same kind of resource; only plain Power
+     is confirmed against the game. Morale keeps "Restores" / "Deals", which
+     IS confirmed - Dire Need reads "Restores 30% of maximum Morale". */
+  var signed = vital !== "Morale";
+  var lead = signed ? (harmful ? "-" : "+")
+                    : (harmful ? "Deals " : "Restores ");
   var unit = harmful && vital === "Morale" ? "damage" : vital;
   var type = e.damageType ? enumWord("damageType", e.damageType) + " " : "";
   var span = el("span", "tv");
   if (v.percent && !vps) {
-    var maxOf = "% of maximum " + vital;
     span.appendChild(el("span", null,
-      harmful
-        ? "Deals " + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
-          maxOf + " as " + type + "damage" + tail
-        : "Restores " + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
-          maxOf + tail));
+      lead + fmt(Math.abs(value) * (v.baseMultiplier || 1) * 100, 3) +
+      "% of maximum " + vital +
+      (!signed && harmful ? " as " + type + "damage" : "") + tail));
   } else if (vps) {
     var coef = Math.abs(value) * vps * (v.baseMultiplier || 1);
-    span.appendChild(el("span", null, word + " "));
+    span.appendChild(el("span", null, lead));
     span.appendChild(el("code", "dmg", fmt(coef, 2) + " x V"));
     span.appendChild(el("span", null, " " + type + unit + tail));
   } else {
-    span.appendChild(el("span", null, word + " " +
+    span.appendChild(el("span", null, lead +
       num(Math.abs(value) * (v.baseMultiplier || 1)) +
       " " + type + unit + tail));
   }
@@ -4416,37 +4442,82 @@ function overTimeGroups(e, withInitial) {
   return groups.length ? groups : null;
 }
 
-/* One block per group. `duration` asks for the carrier's own total to close
+/* A heading and the effects under it. Shared by every group a panel draws -
+   the two over-time lists and the on-expiry list - because they differ only
+   in the words and in whether the carrier's own total closes the block.
+
+   Build the payload FIRST: with nothing in it the heading would announce
+   effects that never arrive. */
+function groupBlock(e, g, progs, level, withDuration) {
+  var host = el("div");
+  var heal = false;
+  g.nested.forEach(function (n) {
+    var ne = EFFECT_CACHE[String(n.id)];
+    if (!ne) return;
+    // A carrier is only a wrapper, so what it hands on decides the colour -
+    // the heal case only, as everywhere else.
+    if (isHeal(ne)) heal = true;
+    effectBody(host, ne, null, progs, level);
+  });
+  if (!host.children.length) return null;
+  var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
+                      (heal ? " heal" : ""));
+  blk.appendChild(el("div", "tipeffwho" + (g.cls ? " " + g.cls : ""), g.header));
+  while (host.firstChild) blk.appendChild(host.firstChild);
+  if (withDuration && !blk.querySelector(".tipdur")) {
+    var dn = durationNode(e, null);
+    if (dn) blk.appendChild(dn);
+  }
+  return blk;
+}
+
+/* One block per list. `duration` asks for the carrier's own total to close
    each block; the effect's own panel already prints that in its foot. */
 function overTimeBlocks(e, progs, level, opts) {
   var groups = overTimeGroups(e, opts.withInitial);
   if (!groups) return [];
   var out = [];
   groups.forEach(function (g) {
-    var host = el("div");
-    var heal = false;
-    g.nested.forEach(function (n) {
-      var ne = EFFECT_CACHE[String(n.id)];
-      if (!ne) return;
-      // A carrier is only a wrapper, so what it hands on decides the colour -
-      // the heal case only, as everywhere else.
-      if (isHeal(ne)) heal = true;
-      effectBody(host, ne, null, progs, level);
-    });
-    // Build the payload first: with nothing in it the header would announce
-    // effects that never arrive.
-    if (!host.children.length) return;
-    var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
-                        (heal ? " heal" : ""));
-    blk.appendChild(el("div", "tipeffwho", g.header));
-    while (host.firstChild) blk.appendChild(host.firstChild);
-    if (opts.duration && !blk.querySelector(".tipdur")) {
-      var dn = durationNode(e, null);
-      if (dn) blk.appendChild(dn);
-    }
-    out.push(blk);
+    var blk = groupBlock(e, g, progs, level, opts.duration);
+    if (blk) out.push(blk);
   });
   return out;
+}
+
+/* What an effect leaves behind when its countdown runs out. Song of the
+   Hammerhand (effect 1879218453) is the case: its bubble ends and hands back
+   part of the power the skill cost, and the panel said nothing about it.
+
+       -0% Incoming Damage
+       Duration: 30s
+
+       Applied on expiration:
+       Restores 269 Power
+
+   `EffectGenerator_Countdown_ExpireEffectList`, 1,117 effects - 246 of their
+   payloads have something to draw and land on 329 skill panels. The block
+   carries no duration of its own: what is written above it is how long the
+   wait is, and the payload's own duration prints where it has one.
+
+   `EffectGenerator_OnRemoval_Effect` (761 effects, 98 skills) is the sibling
+   and is deliberately NOT drawn - it fires when the effect comes off by any
+   route, not only by running out, so it needs a heading of its own that
+   nothing has confirmed. describe.py already tells the two apart in prose
+   ("On removal, applies" / "On expiration, applies"), so the wording is there
+   to copy when somebody reports what the client writes. */
+var EXPIRE_VIA = "EffectGenerator_Countdown_ExpireEffectList";
+
+function isExpireVia(via) {
+  return (via || "").indexOf(EXPIRE_VIA) !== -1;
+}
+
+function expireBlocks(e, progs, level) {
+  var list = (e.nested || []).filter(function (n) { return isExpireVia(n.via); });
+  if (!list.length) return [];
+  // red whatever sits above it - see the .tipeffwho.expiry rule
+  var blk = groupBlock(e, { header: "Applied on expiration:", cls: "expiry",
+                            nested: list }, progs, level, false);
+  return blk ? [blk] : [];
 }
 
 /* A combo effect is a server-side router, not something that happens to you:
@@ -4465,26 +4536,27 @@ function overTimeBlocks(e, progs, level, opts) {
    (effect 1879253754) this way, and in game every one of them says so just
    above the cost.
 
-   Only where the branch is a SENTENCE and no numbers. Following the branch
-   wherever it leads would put values on 72 more skills that nothing has
-   reported missing, and one of them - Null Effect, 1879117734, on 26 skills -
-   is a movement multiplier of exactly 1.0 that would print a no-op line. This
-   restriction is the reported case and nothing else; widen it when a skill
-   turns up whose numbers the game does show through a router.
+   WHATEVER the branch is. It was restricted to a sentence at first, out of a
+   worry that Null Effect (1879117734, on 26 skills) would print its movement
+   multiplier of exactly 1.0 as a no-op line. It does not: that modifier is
+   `silent`, so statLine drops it and the block goes with it. Raise the Spirit
+   (skill 1879064187) is what settled it - its router 1879314528 looks for
+   Resonant Piercing Cry and routes to the bigger heal 1879314529 if it finds
+   it, the plain 1879173086 if it does not, so the whole skill had NO heal
+   number on its panel. 34 branch effects across 82 skills, the rest of them
+   bleeds, debuffs and heals that were missing for the same reason.
 
-   Returns the branch EFFECT, so effectBody renders it the way it renders any
-   sentence-only effect: description colour, linked to its own page. */
+   Returns the branch EFFECT, and effectBlocks draws it as though the skill
+   applied it directly - its own colour, its own carrier and over-time
+   handling, linked to its own page. */
 var COMBO_BASE_VIA = "Effect_Combo_EffectToAddIfNotPresent";
 
-function comboBaseBranch(e, level) {
+function comboBaseBranch(e) {
   var br = null;
   (e.nested || []).forEach(function (n) {
     if (n.via === COMBO_BASE_VIA && !br) br = EFFECT_CACHE[String(n.id)];
   });
-  if (!br || br.probability === 0) return null;
-  if (dispelWording(br, level) || ccLines(br).length ||
-      br.vital || (br.stats || []).length) return null;
-  return effectSentence(br) ? br : null;
+  return br && br.probability !== 0 ? br : null;
 }
 
 /* Every line an effect puts on a skill panel links back to the effect, so the
@@ -4635,14 +4707,26 @@ function effectBlocks(s, progs, level) {
     return true;
   });
 
-  refs.slice(0, 6).forEach(function (ref) {
-    var e = EFFECT_CACHE[String(ref.id)];
-    if (!e) return;
-    // no application chance of its own: it never lands unless something
-    // grants the chance, so it is listed below the panel instead
-    if (e.probability === 0) return;
+  /* What one reference puts on the panel. A router that says nothing itself
+     ends up here a second time with the branch it routes to, which is why
+     this is a function rather than the body of the loop - the branch has to
+     be treated exactly as if the skill had applied it directly, carriers,
+     over-time groups and all. `depth` only stops a router pointing at a
+     router pointing at a router. */
+  function blocksFor(e, ref, depth) {
+    var made = mainBlocks(e, ref, depth);
+    // What it leaves behind when it runs out, under its own heading. A router
+    // is reached through mainBlocks, so its branch has already contributed its
+    // own expiry group by the time this adds the router's (which has none).
+    expireBlocks(e, progs, level).forEach(function (b) { made.push(b); });
+    return made;
+  }
+
+  function mainBlocks(e, ref, depth) {
+    var made = [];
     // What it does to a target it harms reads red; what it gives you reads
     // pale. Everything was green, so a slow looked like a buff.
+    var cls = "tipeff" + (e.harmful ? " harm" : "") + (isHeal(e) ? " heal" : "");
     // An over-time applier is two blocks, not one - what it does on landing
     // and what it does on every pulse, each under its own heading.
     var timed = overTimeBlocks(e, progs, level,
@@ -4652,14 +4736,12 @@ function effectBlocks(s, progs, level) {
       // their own ("Puts on your costume!" on the 20 Guise skills,
       // "+1 Focus every 5 Seconds" on Stance: Precision) and an early return
       // threw it away.
-      var own = el("div", "tipeff" + (e.harmful ? " harm" : "") +
-                          (isHeal(e) ? " heal" : ""));
-      if (effectBody(own, e, ref, progs, level)) out.push(own);
-      timed.forEach(function (b) { out.push(b); });
-      return;
+      var own = el("div", cls);
+      if (effectBody(own, e, ref, progs, level)) made.push(own);
+      timed.forEach(function (b) { made.push(b); });
+      return made;
     }
-    var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
-                       (isHeal(e) ? " heal" : ""));
+    var blk = el("div", cls);
     var carrier = carrierLines(e);
     if (carrier) {
       carrier.pre.forEach(function (t) {
@@ -4683,13 +4765,22 @@ function effectBlocks(s, progs, level) {
         blk.appendChild(el("div", "tipeffwho", carrier.header));
         while (host.firstChild) blk.appendChild(host.firstChild);
       }
-      if (blk.children.length) out.push(blk);
-      return;
+      if (blk.children.length) made.push(blk);
+      return made;
     }
-    if (effectBody(blk, e, ref, progs, level)) { out.push(blk); return; }
-    // Nothing of its own: if it is a router, say what it routes to untraited.
-    var base = comboBaseBranch(e, level);
-    if (base && effectBody(blk, base, null, progs, level)) out.push(blk);
+    if (effectBody(blk, e, ref, progs, level)) { made.push(blk); return made; }
+    // Nothing of its own: if it is a router, draw what it routes to untraited.
+    var base = depth < 2 ? comboBaseBranch(e) : null;
+    return base ? blocksFor(base, null, depth + 1) : made;
+  }
+
+  refs.slice(0, 6).forEach(function (ref) {
+    var e = EFFECT_CACHE[String(ref.id)];
+    if (!e) return;
+    // no application chance of its own: it never lands unless something
+    // grants the chance, so it is listed below the panel instead
+    if (e.probability === 0) return;
+    blocksFor(e, ref, 0).forEach(function (b) { out.push(b); });
   });
   // the panel quotes at most six, the way the client's box is bounded - but
   // saying so beats letting the rest disappear without a word

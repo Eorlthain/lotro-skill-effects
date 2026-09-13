@@ -1536,3 +1536,21 @@ a.stacklink:hover .stackcount {
   -webkit-mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
 }
+
+/* A vital line is built as <span class="tv"> so its parts can be styled
+   apart, and `.tip .tv` paints that span the modifier grey. The heal and harm
+   twins above already override it, but the NEUTRAL case had nothing - so a
+   power restore in an ordinary block, Song of the Hammerhand's "+269 Power"
+   on expiry, read grey inside a block of green. Inherit the block's own
+   colour; heal and harm still win on specificity. */
+.tipeff .tipstat .tv,
+.tip .tl.vital .tv {
+  color: inherit;
+}
+
+/* "Applied on expiration:" is what happens when the effect runs out, and the
+   client writes that red whatever the effect above it was - unlike the other
+   group headings, which take the duration green. */
+.tip .tipeffwho.expiry {
+  color: var(--tip-mods-harm);
+}
