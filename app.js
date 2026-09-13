@@ -1544,7 +1544,7 @@ function renderSkill(s, progs, D, MS, ET) {
     ctl.appendChild(input);
     wrap.appendChild(ctl);
     if ((s.attacks || []).some(function (a) {
-      return a.implementContribution || a.damageContribution;
+      return a.implementContribution || hasDamageAdd(a);
     })) {
       wrap.appendChild(damageNote(s));
     }
@@ -2088,11 +2088,100 @@ function traitLink(t, extra) {
 }
 
 /* A skill's provenance, rendered from the skill's own `obtained` list. */
+/* Which classes can reach a trait, and by which of the four routes: a cell in
+   one of the class's trees, a branch's specialization trait, a branch's
+   set-bonus trait, or the class's own level/rank table. The last two matter
+   most - a specialization trait and a set-bonus trait sit in no tree cell and
+   on no level table.
+
+   This is THE answer to "is this still a class trait", so the trait page's
+   "Available to" and the skill page's "How you get it" both ask it here rather
+   than each deciding for itself. */
+function classRoutesToTrait(traitId, D) {
+  var owners = [];
+  if (!D || !D.classes) return owners;
+  Object.keys(D.classes).forEach(function (k) {
+    var c = D.classes[k];
+    var how = null;
+    (c.trees || []).forEach(function (tid) {
+      var tree = D.trees && D.trees[String(tid)];
+      if (!tree) return;
+      (tree.cells || []).forEach(function (cell) {
+        if (cell.trait === traitId) {
+          how = how || (cell.branchName ? "trait tree - " + cell.branchName
+                                        : "trait tree");
+        }
+      });
+      (tree.branches || []).forEach(function (br) {
+        var where = br.name || br.key;
+        if (br.specTrait === traitId) how = "specialization for " + where;
+        (br.setBonuses || []).forEach(function (bonus) {
+          if (bonus.trait === traitId) {
+            how = how || (bonus.points + " points in " + where);
+          }
+        });
+      });
+    });
+    // Monster-play classes advance by RANK, not level, and 687 of the 982
+    // class trait entries carry no level at all - so every creep trait page
+    // read "Available to / Stalker / level undefined". A trained trait that
+    // also sits in a tree keeps the tree wording as well; overwriting it threw
+    // away the more useful half.
+    var viaLevel = (c.traits || []).filter(function (e) {
+      return e.id === traitId;
+    })[0];
+    if (viaLevel) {
+      var earned = viaLevel.level !== undefined ? "level " + viaLevel.level
+                 : viaLevel.rank !== undefined ? "rank " + viaLevel.rank
+                 : "trained";
+      how = how ? earned + ", " + how : earned;
+    }
+    if (how) owners.push([c, how]);
+  });
+  return owners;
+}
+
 function obtainedBlock(s, D) {
   if (!s.obtained || !s.obtained.length) return null;
+  /* A class trait removed from the game still names the skill it used to
+     grant. Heart Seeker offered two Hunter traits and only one of them is in
+     the Hunter's tree; the other is a pre-revamp trait no Hunter can take. The
+     trait page already declines to name a class for it - its "Available to"
+     is empty - so the skill page claiming "Hunter - from trait Heart Seeker"
+     was the two pages contradicting each other on the same question.
+
+     Only rows that NAME a class are checked. War-steed, racial, Big Battle
+     and characteristic traits are not class traits, sit in no class tree, and
+     keep their rows. 9 rows go, across 9 skills, every one a Class_Burglar or
+     Class_Hunter trait from before the trait trees. */
+  var rows = s.obtained.filter(function (o) {
+    if (o.how !== "trait" || !o["class"] || !D || !D.classes) return true;
+    return classRoutesToTrait(o.trait, D).some(function (pair) {
+      return pair[0].id === o["class"];
+    });
+  });
+  if (!rows.length) return null;
+
+  /* A row that names no class is often not classless at all. Every one of the
+     56 specialization rows is a trait exactly one class can take - Come At Me
+     comes from The Fulcrum, which only a Brawler has - and the row carried the
+     tree, the branch and the cell but no class, so it rendered with nothing
+     where the class belongs: " - from trait The Fulcrum". The class is
+     derivable from the trait, so derive it.
+
+     Only where the answer is unambiguous. The war-steed, racial, Big Battle,
+     characteristic and set-bonus rows reach no class at all, and a trait two
+     classes could take would be a guess; both keep no class. */
+  function classFor(o) {
+    if (o["class"]) return D.classes[String(o["class"])] || null;
+    if (o.how !== "trait") return null;
+    var owners = classRoutesToTrait(o.trait, D);
+    return owners.length === 1 ? owners[0][0] : null;
+  }
+
   var ul = el("ul", "links");
-  s.obtained.forEach(function (o) {
-    var cls = o["class"] ? D.classes[String(o["class"])] : null;
+  rows.forEach(function (o) {
+    var cls = classFor(o);
     var li = el("li");
     var img = el("img");
     img.src = iconUrl(cls ? cls.icon : 0);
@@ -2104,17 +2193,20 @@ function obtainedBlock(s, D) {
       ca.href = urlFor("class/" + cls.id);
       li.appendChild(ca);
     }
+    // the dash joins the class to what follows it, so with no class there is
+    // nothing for it to join and the line starts on the wording itself
+    var lead = cls ? " - " : "";
     if (o.how === "level") {
-      li.appendChild(el("span", null, " - trained at level " + o.level));
+      li.appendChild(el("span", null, lead + "trained at level " + o.level));
     } else if (o.how === "rank") {
-      li.appendChild(el("span", null, o.rank ? " - earned at rank " + o.rank
-                                             : " - available from the start"));
+      li.appendChild(el("span", null, o.rank ? lead + "earned at rank " + o.rank
+                                             : lead + "available from the start"));
       // MonsterPlay_SkillCost is a destiny-point price, and destiny points are
       // no longer part of monster play - the number is still in the DAT but it
       // is not something a reader can spend, so it is not shown.
     } else {
       var t = D.traits[String(o.trait)];
-      li.appendChild(el("span", null, " - from trait "));
+      li.appendChild(el("span", null, lead + "from trait "));
       var ta = el("a", null, t ? t.name : "#" + o.trait);
       ta.href = urlFor("trait/" + o.trait);
       li.appendChild(ta);
@@ -2562,49 +2654,10 @@ function renderTrait(t, D, MS, progs) {
   // but normalize writes the field either way, so the page reads it either way
   // rather than silently dropping one.
   section(host, "Effects it adds to other skills", enablesBlock(t));
-  // Which classes reach this trait, and by which of the four routes. The last
-  // two matter most: a specialization trait and a set-bonus trait sit in no
-  // tree cell and on no level table, so without them a trait page like The
-  // Deadly Storm names no class at all.
-  var owners = [];
-  Object.keys(D.classes).forEach(function (k) {
-    var c = D.classes[k];
-    var how = null;
-    (c.trees || []).forEach(function (tid) {
-      var tree = D.trees[String(tid)];
-      if (!tree) return;
-      (tree.cells || []).forEach(function (cell) {
-        if (cell.trait === t.id) {
-          how = how || (cell.branchName ? "trait tree - " + cell.branchName
-                                        : "trait tree");
-        }
-      });
-      (tree.branches || []).forEach(function (br) {
-        var where = br.name || br.key;
-        if (br.specTrait === t.id) {
-          how = "specialization for " + where;
-        }
-        (br.setBonuses || []).forEach(function (bonus) {
-          if (bonus.trait === t.id) {
-            how = how || (bonus.points + " points in " + where);
-          }
-        });
-      });
-    });
-    // Monster-play classes advance by RANK, not level, and 687 of the 982
-    // class trait entries carry no level at all - so every creep trait page
-    // read "Available to / Stalker / level undefined". A trained trait that
-    // also sits in a tree keeps the tree wording as well; overwriting it threw
-    // away the more useful half.
-    var viaLevel = (c.traits || []).filter(function (e) { return e.id === t.id; })[0];
-    if (viaLevel) {
-      var earned = viaLevel.level !== undefined ? "level " + viaLevel.level
-                 : viaLevel.rank !== undefined ? "rank " + viaLevel.rank
-                 : "trained";
-      how = how ? earned + ", " + how : earned;
-    }
-    if (how) owners.push([c, how]);
-  });
+  // Which classes reach this trait, and by which of the four routes - the
+  // same question the skill page asks before it will call something a class
+  // trait, so both pages read it off one function.
+  var owners = classRoutesToTrait(t.id, D);
   if (owners.length) {
     var ul = el("ul", "links");
     owners.forEach(function (pair) {
@@ -3457,6 +3510,17 @@ function pipLines(host, s) {
   }
   var chg = s.pipChange, min = s.pipMin;
   if (chg > 0) {
+    // Requiring the resource AND paying you more of it is not a contradiction:
+    // Agile Rejoinder wants 3 Focus on the bar before it will fire and then
+    // adds 3 more. The gate used to be dropped on the floor here, because a
+    // skill that ADDS to a resource was assumed not to ask for any. The
+    // requirement reads first - it is what decides whether the skill is
+    // available at all. Only Agile Rejoinder takes this path; the other 14
+    // that do both are Attunement and Balance skills, and the two-ended
+    // renderer below has always printed their "Requires:" line.
+    if (min) {
+      tipLine(host, null, "Requires at least " + min + " " + pip, "pip");
+    }
     tipLine(host, null, "Adds " + chg + " to " + pip, "pip");
     return;
   }
@@ -4509,11 +4573,23 @@ function multiLine(cls, str) {
 /* Damage is the one line that cannot be resolved here: the client multiplies
    the skill's coefficients by the character's weapon and mastery. Those two
    are written as W and A and explained below the panel. */
+/* The damage-add term is real only where the ATTACK supplies an additional
+   DPS of its own, through Skill_AttackHook_DPSAddMod_Progression. 1,002 of the
+   1,049 hooks that carry a damage-add multiplier have no such progression, so
+   their second term multiplies zero - and the panel was printing "6.545 x W +
+   6.545 x A" for all of them, which reads as half the damage coming from
+   somewhere it never comes from. Bash is one: its tooltip is pure weapon
+   contribution, and solving a real in-game tooltip against it only closed once
+   the A term was dropped. */
+function hasDamageAdd(a) {
+  return !!(a.damageContribution && a.dpsAddProgression);
+}
+
 function damageExpr(a, progs, level) {
   var parts = [];
   var mod = a.damageModifier === undefined ? 1 : a.damageModifier;
   if (a.implementContribution) parts.push(fmt(a.implementContribution) + " x W");
-  if (a.damageContribution) parts.push(fmt(a.damageContribution) + " x A");
+  if (hasDamageAdd(a)) parts.push(fmt(a.damageContribution) + " x A");
   var cap = a.damageMax !== undefined ? a.damageMax
           : (a.damageMaxProgression ? progAt(progs, a.damageMaxProgression, level) : null);
   // A hook with no weapon and no damage-add contribution is not a hook that
@@ -4536,11 +4612,18 @@ function damageExpr(a, progs, level) {
   // W and A are the two numbers this data cannot know. Once the reader has
   // supplied them once, in the sidebar, the expression is just arithmetic.
   var W = parseFloat(PREFS.wdps), A = parseFloat(PREFS.dmgAdd);
+  var M = parseFloat(PREFS.mastery);
   var resolved = null;
+  // Mastery alone resolves nothing - it multiplies a weapon number that is
+  // not there yet - so the gate stays on W and A.
   if (!isNaN(W) || !isNaN(A)) {
     resolved = ((a.implementContribution || 0) * (isNaN(W) ? 0 : W) +
-                (a.damageContribution || 0) * (isNaN(A) ? 0 : A)) * mod;
+                (hasDamageAdd(a) ? a.damageContribution : 0)
+                  * (isNaN(A) ? 0 : A)) * mod;
+    // The cap is the skill's own ceiling, so it bites before the character's
+    // multipliers rather than after them.
     if (cap && resolved > cap) resolved = cap;
+    if (!isNaN(M) && M > 0) resolved *= 1 + M / 100;
   }
   var span = el("span", "tv");
   span.appendChild(el("code", "dmg", expr));
@@ -4576,15 +4659,24 @@ function flatDamage(a, value) {
   return span;
 }
 
+/* W was described here as "its DPS over the skill's animation", which is wrong
+   and wrong by a factor of two on a skill whose action duration is 2s. Solving
+   a real Bash tooltip settled it: W is the weapon's own damage roll, and the
+   spread between the panel's low and high figures is the weapon's own spread,
+   not a coefficient of DPS. The multipliers below W and A are named too, since
+   a reader comparing the panel against the game will be short by exactly them.
+*/
 function damageNote(s) {
   var n = el("div", "muted tipnote");
+  var anyAdd = (s.attacks || []).some(hasDamageAdd);
   n.innerHTML =
-    "<strong>W</strong> is what your weapon contributes at this level (its DPS "
-    + "over the skill's animation) and <strong>A</strong> is your damage-add "
-    + "from mastery. The client multiplies those by the coefficients above, "
-    + "which are the skill's own; the two variables come from your character "
-    + "and gear, so they are not in this data. Everything else on the panel is "
-    + "evaluated at the level you pick.";
+    "<strong>W</strong> is your weapon's damage - one roll between its low and "
+    + "high figures, which is where the spread in the game's own damage line "
+    + "comes from"
+    + (anyAdd ? ", and <strong>A</strong> is the extra damage this attack adds "
+              + "over its action duration" : "")
+    + ". Mastery is applied when you set it in the sidebar; your damage "
+    + "modifiers and your melee, ranged or tactical damage are not.";
   return n;
 }
 
@@ -5330,13 +5422,14 @@ function buildPrefsUI() {
   });
 
   var gear = el("details", "pfgear");
-  gear.appendChild(el("summary", null, "Weapon numbers"));
+  gear.appendChild(el("summary", null, "Weapon and mastery"));
   var note = el("div", "muted pfnote");
-  note.textContent = "A skill's damage is its own coefficients times two "
-    + "numbers off your character. Put them in and the damage line resolves "
-    + "to real numbers instead of W and A.";
+  note.textContent = "Put these in and the damage line resolves to real "
+    + "numbers instead of W and A. Your damage modifiers and your melee, "
+    + "ranged or tactical damage still multiply what comes out.";
   gear.appendChild(note);
-  [["wdps", "W - weapon contribution"], ["dmgAdd", "A - damage from mastery"]]
+  [["wdps", "W - weapon damage"], ["dmgAdd", "A - attack's damage-add"],
+   ["mastery", "Mastery %"]]
     .forEach(function (pair) {
       var w = el("label", "pf");
       w.appendChild(el("span", null, pair[1]));
