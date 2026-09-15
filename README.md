@@ -77,6 +77,17 @@ DID + `0x09000000`.
 itself, so returning visitors get the new files rather than their cache. If you
 edit `app.js` or `style.css` by hand without rebuilding, bump it by hand.
 
+## Tooltips
+
+Skill and effect panels are worded from the client's own StringTables. Every
+line template lives in `wording.js` (generated from the extractor's
+`wording.LINES`, one map shared with its DAT-only tooltip image generator), and
+`app.js` fills the slots and decides line order. The site keeps its own look
+(`style.css`); there is no separate "game tooltip" renderer any more.
+
+Level, class and weapon numbers typed into "Your character" last for the visit
+only - nothing is saved in the browser.
+
 ## Rebuilding after a LOTRO patch
 
 The extractor that produces `data/` and `icons/` is kept separately and is not
@@ -93,6 +104,10 @@ error - and it writes what changed since the last build into
     data/properties.json   the client's own label for each game property
     data/changes.json      what this build changed since the previous one
     data/meta.json         counts
+    data/wording.json      the tooltip line templates (wording.js is the same,
+                           loaded as a script)
+    data/ui.json           the client's tooltip colours and font metrics - not
+                           read by the site, kept for the image generator
     data/progressions.json every level-scaling curve
     data/classes.json      the 12 classes, their trained skills and class traits
     data/traits.json       every trait and the skills it grants

@@ -223,59 +223,68 @@ function preloadTipEffects(s) {
       });
     }));
   }
-  // A carrier's payload is what the panel actually prints, so it has to be in
-  // hand too - one level down, which is as deep as the client goes. A combo
-  // router's untraited branch is printed at the same depth, for the same
-  // reason - see comboBaseBranch.
-  return fetchAll(Object.keys(ids)).then(function () {
-    var deeper = {}, branches = {};
-    Object.keys(ids).forEach(function (id) {
+  /* How deep the panel reaches. A carrier's payload is what it actually
+     prints; a router's untraited branch and an aura's payload are drawn as
+     references of their own, so each can be a carrier again. Rousing Words
+     (1879109284) is the deepest real chain: aura -> over-time applier ->
+     combo router -> the heal-over-time, four levels from the skill.
+
+     Every level is a handful of ids and every fetch is shard-cached, so the
+     cost is one or two files, not a walk of the graph. `seen` stops a cycle
+     and stops re-queuing what is already in hand. */
+  function reachable(list) {
+    var out = {};
+    list.forEach(function (id) {
       var e = EFFECT_CACHE[id];
       if (!e) return;
-      if (carrierLines(e)) {
-        (e.nested || []).forEach(function (n) { deeper[n.id] = 1; });
-        return;
-      }
+      var wrapper = !!carrierLines(e) || !!e.aura;
       (e.nested || []).forEach(function (n) {
-        if (isOverTimeVia(n.via) || isExpireVia(n.via) ||
-            isReactiveVia(n.via)) deeper[n.id] = 1;
-        if (n.via === COMBO_BASE_VIA) { deeper[n.id] = 1; branches[n.id] = 1; }
+        /* The test is "will the panel try to DRAW this?", not "do we
+           recognise the property name it came through". `n.spawn` marks an
+           effect that lives on a hotspot or a summon - normalize.py splices
+           those in - and it arrives via Effect_Genesis_SummonedObject, which
+           matches none of the via tests and belongs to an effect that is
+           neither a carrier nor an aura. So it was never fetched, the cache
+           missed, and the block drew nothing: Bastion of Light
+           (skill 1879108999) showed no effect at all.
+
+           Effect_TierUp_EffectList is still deliberately NOT here - it is a
+           ladder of alternatives, and following it prints every tier at once. */
+        if (wrapper || n.spawn || isOverTimeVia(n.via) || isExpireVia(n.via) ||
+            isReactiveVia(n.via) || n.via === COMBO_BASE_VIA) {
+          out[n.id] = 1;
+        }
       });
     });
-    return fetchAll(Object.keys(deeper)).then(function () {
-      // A router's branch is drawn as if the skill applied it directly, so
-      // where the branch is ITSELF a carrier its payload is one further step
-      // away and has to be in hand too. Only branches go this deep: the set
-      // is small, and a carrier's payload never needs a third level.
-      var third = {};
-      Object.keys(branches).forEach(function (id) {
-        var b = EFFECT_CACHE[id];
-        if (!b) return;
-        var wrapper = !!carrierLines(b);
-        (b.nested || []).forEach(function (n) {
-          if (wrapper || isOverTimeVia(n.via) || isExpireVia(n.via)) {
-            third[n.id] = 1;
-          }
-        });
+    return Object.keys(out);
+  }
+  var seen = {};
+  Object.keys(ids).forEach(function (id) { seen[id] = 1; });
+  function descend(list, left) {
+    if (!list.length || !left) return Promise.resolve();
+    return fetchAll(list).then(function () {
+      var next = reachable(list).filter(function (id) {
+        if (seen[id]) return false;
+        seen[id] = 1;
+        return true;
       });
-      return fetchAll(Object.keys(third));
+      return descend(next, left - 1);
     });
-  });
+  }
+  return descend(Object.keys(ids), 4);
 }
 
 /* The same one level down, for an EFFECT's own page. Nothing was preloaded
    there at all, because until over-time groups the effect panel never quoted
    anything but the effect's own fields. */
 function preloadEffectTip(e) {
-  var want = (e.nested || []).filter(function (n) {
-    return (isOverTimeVia(n.via) || isExpireVia(n.via) ||
-            isReactiveVia(n.via)) && !EFFECT_CACHE[String(n.id)];
-  });
-  return Promise.all(want.map(function (n) {
-    return loadRecord("effect", n.id).then(function (rec) {
-      if (rec) EFFECT_CACHE[String(rec.id)] = rec;
-    });
-  }));
+  /* The effect's own panel reaches exactly as deep as a skill panel does -
+     a pulse list whose payload is a combo router (Shroud of Darkness'
+     tier-up, 1879140596) needs the router's branch in hand too, and only
+     fetching the first level drew the heading's block as nothing. So it is
+     the same descent, rooted at this effect. */
+  EFFECT_CACHE[String(e.id)] = e;
+  return preloadTipEffects({ userEffects: [{ id: e.id }] });
 }
 
 /* A trait's rank block quotes the effects it applies - "On every Swordplay
@@ -550,6 +559,16 @@ function fmt(n, dp) {
    sidebar tally), which are the site's own numbers rather than the game's. */
 function num(n) {
   return typeof n === "number" ? String(Math.round(n)) : fmt(n);
+}
+
+/* The one place the client DOES group its digits: damage and healing.
+   Confirmed both ways in the same breath - Rousing Words heals
+   "1,378 - 1,969 Morale" while Might of the Ages buffs "+7800 Tactical
+   Mitigation", and Wisdom of the Council reflects "4,260 Light damage".
+   So the separator follows the KIND of number, not the size of it: an
+   amount of morale or damage is grouped, a stat or rating is not. */
+function numAmt(n) {
+  return num(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /* The client writes anything over a minute in minutes and seconds: 60s is
@@ -3422,21 +3441,24 @@ function ccLines(e) {
     out.push(el("div", "tipstat",
                 (dur ? secs(dur) + " " : "") + (word || CC_WORDS[st] || spaceWords(st))));
     if (st === "ConjunctionStunned") {
-      out.push(el("div", "tipstat", "Starts Fellowship Manoeuvre"));
+      out.push(el("div", "tipstat", W("startsFellowshipManoeuvre")));
     }
     // "after 1s" is the grace period: the state cannot be broken at all until
     // it has run that long. Riddle's is 0, so its line is the bare chance.
-    var after = cc.grace ? " after " + secs(cc.grace) : "";
+    // With a grace period the client has its own entries - "...% break
+    // chance on damage after _s" - rather than a suffix glued on here.
     var def = CC_BREAK_DEFAULT[st] || {};
     var harm = cc.breakOnSkill !== undefined ? cc.breakOnSkill : def.harm;
     if (harm) {
-      out.push(el("div", "tipstat",
-                  fmt(harm * 100, 0) + "% break chance on harm" + after));
+      out.push(el("div", "tipstat", cc.grace
+        ? W("breakHarmAfter", fmt(harm * 100, 0), fmt(cc.grace))
+        : W("breakChanceHarm", fmt(harm * 100, 0))));
     }
     var dmg = cc.breakOnDamage !== undefined ? cc.breakOnDamage : def.damage;
     if (dmg) {
-      out.push(el("div", "tipstat",
-                  fmt(dmg * 100, 0) + "% break chance on damage" + after));
+      out.push(el("div", "tipstat", cc.grace
+        ? W("breakDamageAfter", fmt(dmg * 100, 0), fmt(cc.grace))
+        : W("breakChanceDamage", fmt(dmg * 100, 0))));
     }
   });
   return out;
@@ -3458,7 +3480,7 @@ function ccLines(e) {
    named here, and it is the number the game shows. */
 var COMBAT_ONLY_GRACE = 9;
 function combatOnlyNote() {
-  return "Expires if out of combat for " + COMBAT_ONLY_GRACE + " seconds.";
+  return W("expiresOutOfCombat", COMBAT_ONLY_GRACE);
 }
 
 /* "Resistance: Song (160)". Effect_Resist_Level is 0 on almost every effect
@@ -3493,7 +3515,7 @@ function auraWording(e) {
    and the generated dispel list on 10 more. */
 function categoryWord(field, value) {
   var w = enumWord(field, value);
-  return w === "Magic" ? "Tactical" : w;
+  return w === "Magic" ? W("tacticalWord") : w;
 }
 
 function resistNames(cats) {
@@ -3510,9 +3532,9 @@ function resistWording(rec, level, withLevel) {
   // category is saying what its effects can be resisted as, not carrying a
   // resist level of its own - Blinding Dust the skill reads "Resistance:
   // Wound" and Blinding Dust the effect reads "Resistance: Wound (160)".
-  if (!withLevel) return "Resistance: " + named;
+  if (!withLevel) return W("resistance", named);
   var at = rec.resistLevel || (level === undefined ? LEVEL_CAP : level);
-  return "Resistance: " + named + " (" + at + ")";
+  return W("resistanceWith", named, at);
 }
 
 function tipLine(host, label, value, cls) {
@@ -3587,23 +3609,23 @@ function pipLines(host, s) {
     // that do both are Attunement and Balance skills, and the two-ended
     // renderer below has always printed their "Requires:" line.
     if (min) {
-      tipLine(host, null, "Requires at least " + min + " " + pip, "pip");
+      tipLine(host, null, W("requiresAtLeast", min, pip), "pip");
     }
-    tipLine(host, null, "Adds " + chg + " to " + pip, "pip");
+    tipLine(host, null, W("addsTo", chg, pip), "pip");
     return;
   }
   // A minimum with no change of its own is still a cost - Hamstring gates on
   // 1 Fervour and takes it.
   if (!chg) {
-    if (min) tipLine(host, "Cost:", min + " " + pip, "pip");
+    if (min) tipW(host, "cost", "pip", min, pip);
     return;
   }
   var spend = Math.abs(chg);
   if (min && min !== spend) {
-    tipLine(host, null, "Requires at least " + min + " " + pip, "pip");
+    tipLine(host, null, W("requiresAtLeast", min, pip), "pip");
   }
-  if (min === spend) tipLine(host, "Cost:", spend + " " + pip, "pip");
-  else tipLine(host, null, "Removes " + spend + " from " + pip, "pip");
+  if (min === spend) tipW(host, "cost", "pip", spend, pip);
+  else tipLine(host, null, W("removesFrom", spend, pip), "pip");
 }
 
 /* Attunement and Balance do not count up - they slide either side of a home
@@ -3659,7 +3681,7 @@ function twoEndedPipLines(host, s, def, pip) {
   function requirement(value, isMin) {
     if (def.home === undefined || def.home === null) {
       sentence(isMin ? "max" : "min",
-               "Requires " + pip + " " + value + (isMin ? " or more" : " or less"));
+               W(isMin ? "requiresAtLeast" : "requiresAtMost", value, pip));
       return;
     }
     var d = value - def.home;
@@ -3668,11 +3690,12 @@ function twoEndedPipLines(host, s, def, pip) {
     // "Requires: 0 [healing]" is right for Improved Rune of Restoration -
     // any healing attunement at all, including none.
     var side = d > 0 ? "max" : d < 0 ? "min" : (isMin ? "max" : "min");
-    amountLine("Requires:", side, Math.abs(d));
+    amountLine(wLead("requiresColon") || "Requires:", side, Math.abs(d));
   }
   var chg = s.pipChange;
-  if (chg) amountLine("Attunes:", chg < 0 ? "min" : "max", Math.abs(chg));
-  if (s.pipTowardHome) amountLine("Attunes:", "home", s.pipTowardHome);
+  var attunesLabel = wLead("attunes") || "Attunes:";
+  if (chg) amountLine(attunesLabel, chg < 0 ? "min" : "max", Math.abs(chg));
+  if (s.pipTowardHome) amountLine(attunesLabel, "home", s.pipTowardHome);
   if (s.pipMin !== undefined && s.pipMin !== null) requirement(s.pipMin, true);
   if (s.pipMax !== undefined && s.pipMax !== null) requirement(s.pipMax, false);
 }
@@ -3710,15 +3733,15 @@ function tooltipPanel(s, progs, level) {
   var row0 = el("div", "tl tiprow0");
 
   if (s.immediate) {
-    row0.appendChild(el("span", "tv", "Immediate"));
+    row0.appendChild(el("span", "tv", W("speedImmediate")));
   } else if (s.ignoresResetTime) {
-    row0.appendChild(el("span", "tv", "Fast"));
+    row0.appendChild(el("span", "tv", W("speedFast")));
   }
 
   if (s.maxRange !== undefined) {
-    row0.appendChild(el("span", "tv tipright",
+    row0.appendChild(el("span", "tv tipright", W("range",
       (s.minRange !== undefined ? fmt(s.minRange) + " - " : "") +
-      fmt(s.maxRange) + "m Range"));
+      fmt(s.maxRange))));
   }
 
 if (row0.children.length) top.appendChild(row0);
@@ -3747,27 +3770,32 @@ if (row0.children.length) top.appendChild(row0);
       ? titleCase(qual === "Magic" ? "Tactical" : qual) + " Skill"
       : qw);
   }
-  if (s.aeMaxTargets) tipLine(top, null, "Max targets: " + s.aeMaxTargets);
+  if (s.aeMaxTargets) tipW(top, "maxTargets", null, s.aeMaxTargets);
   if (s.aeSphereRadius !== undefined) {
-    tipLine(top, "Radius:", fmt(s.aeSphereRadius) + "m");
+    tipW(top, "radius", null, fmt(s.aeSphereRadius));
   }
   // An arc is a wedge in front of you, and what a player needs off the panel
   // is how far it reaches, not how wide it opens. All 1,136 arc skills carry
   // aeArcRadius alongside the angle, and 1,119 of them have no maxRange at
   // all - so without this line their panel never says how far they reach.
   // The angle is not lost: the page below draws the wedge, to scale.
-  if (s.aeArcDegrees) tipLine(top, "Range:", fmt(s.aeArcRadius) + "m");
+  if (s.aeArcDegrees) tipLine(top, null, W("arc", fmt(s.aeArcDegrees), fmt(s.aeArcRadius)));
+  // "Box (_ metres long by _ metres wide)" - the table's own line for a box
+  // volume, which the panel did not print at all.
+  if (s.aeBoxLength && s.aeBoxWidth) {
+    tipLine(top, null, W("boxShape", fmt(s.aeBoxLength), fmt(s.aeBoxWidth)));
+  }
   // The client puts the induction here, between the radius and the resistance,
   // and words it as bare seconds in the same grey as the rest of the block -
   // the green "time" colour belongs to the cooldown at the foot. Whether it
   // can be interrupted is on the page below, not on the panel.
   if (s.induction) {
-    tipLine(top, "Induction:", secs(s.induction.duration));
+    tipW(top, "induction", null, secs(s.induction.duration));
   }
   // A channel is not a toggle: Still As Death runs for Channeling_Duration and
   // then ends. The state it points at is the only place that number lives.
   if (s.channel) {
-    tipLine(top, "Channel Duration:", secs(s.channel.duration));
+    tipW(top, "channelDuration", null, secs(s.channel.duration));
   }
   if (s.resistCategory) {
     tipLine(top, null, resistWording(s, level), "tipresist");
@@ -3778,7 +3806,7 @@ if (row0.children.length) top.appendChild(row0);
   var shown = types.map(function (t) {
     return (DISPLAY_TYPES && DISPLAY_TYPES[t]) || titleCase(t);
   });
-  if (shown.length) tipLine(top, "Skill Type:", shown.join(", "));
+  if (shown.length) tipW(top, "skillType", null, shown.join(", "));
   if (top.children.length) box.appendChild(top);
 
   if (s.desc) {
@@ -3799,25 +3827,32 @@ if (row0.children.length) top.appendChild(row0);
   effectBlocks(s, progs, level).forEach(function (blk) { box.appendChild(blk); });
 
   var foot = el("div", "tipbody cost");
-  function costText(c, suffix) {
+  // The client's cost line is "Cost: <amount> <vital>", so the two halves are
+  // kept apart and handed to the template rather than glued together here.
+  function costParts(c) {
     var v = c.points !== undefined ? c.points : progAt(progs, c.progression, level);
     if (v === null || v === undefined) {
       // Skill_Vital_Percent is a fraction, not a percentage: Warden's Triumph
       // stores 0.025 and the client prints "2.5% of your Morale". Printing it
-      // straight read as "0.03%" - out by a factor of a hundred.
+      // straight read as "0.03%" - out by a factor of a hundred. The percent
+      // form is its own client line and already names the vital, so it goes
+      // in whole as the amount with nothing after it.
       return c.percent === undefined ? null
-        : fmt(c.percent * 100, 3) + "% of your " + (vitalName(c.type) || "vital") + suffix;
+        : { amount: W("percentOfYour", fmt(c.percent * 100, 3),
+                      vitalName(c.type) || "vital"), unit: "" };
     }
-    return num(v) + " " + vitalName(c.type) + suffix;
+    return { amount: num(v), unit: vitalName(c.type) };
   }
   (s.costs || []).forEach(function (c) {
-    tipLine(foot, "Cost:", costText(c, ""));
+    var t = costParts(c);
+    if (t) tipW(foot, "cost", null, t.amount, t.unit);
   });
   // Skill_Toggle_VitalCostPerSecondList - what the skill drains for as long as
   // it stays on. Spur On costs 640 War-steed Power to start and 10 a second to
   // hold; only the first was on the panel. 47 skills have one.
   (s.toggleCosts || []).forEach(function (c) {
-    tipLine(foot, "Cost:", costText(c, " Per Second"));
+    var t = costParts(c);
+    if (t) tipW(foot, "costPerSecond", null, t.amount, t.unit);
   });
   pipLines(foot, s);
   // The client prints "Toggle Skill" straight after the cost, and without it
@@ -3829,10 +3864,10 @@ if (row0.children.length) top.appendChild(row0);
   // Skill. The channeling state is the marker, not the toggle effect list -
   // two of the 171 channels carry no toggle effects of their own.
   if (s.channel) {
-    tipLine(foot, null, "Channel Skill", "time");
+    tipLine(foot, null, W("channelledSkill"), "time");
   } else if ((s.toggleEffects && s.toggleEffects.length) ||
              (s.toggleUserEffects && s.toggleUserEffects.length)) {
-    tipLine(foot, null, "Toggle Skill", "time");
+    tipLine(foot, null, W("toggleSkill"), "time");
   }
   if (s.gambitAdds) {
     var ga = gambitRow(s.gambitAdds, "Builds");
@@ -3847,10 +3882,10 @@ if (row0.children.length) top.appendChild(row0);
     var grm = gambitRow(s.gambitRemoves, "Clears");
     if (grm) foot.appendChild(grm);
   } else if (s.clearsGambits) {
-    tipLine(foot, null, "Clears All Gambits");
+    tipLine(foot, null, W("clearsAllGambits"));
   }
   if (s.cooldown !== undefined) {
-    tipLine(foot, "Cooldown:", secs(s.cooldown), "time cdgap");
+    tipW(foot, "cooldown", "time cdgap", secs(s.cooldown));
   }
   if (foot.children.length) box.appendChild(foot);
   // The panel ends at the cooldown. What class you have to be, and at what
@@ -3874,13 +3909,10 @@ function effectTooltip(e, progs, D, level) {
   head.appendChild(el("div", "tipname", e.name));
   box.appendChild(head);
 
-  // Effect_ResistanceCategory_Base comes before the description in the client
-  var aur = auraWording(e);
-  if (aur) {
-    var ab = el("div", "tipbody");
-    tipLine(ab, null, aur);
-    box.appendChild(ab);
-  }
+  // Effect_ResistanceCategory_Base comes before the description in the client.
+  // (The old "Aura - 5m radius, affects players" summary line was the site's
+  // own words; an aura now shows the client's own header over its payload,
+  // below.)
   if (e.resistCategory) {
     var rc = el("div", "tipbody");
     var rl = el("div", "tl tipresist");
@@ -3904,6 +3936,7 @@ function effectTooltip(e, progs, D, level) {
   });
 
   var body = el("div", "tipbody");
+  var saidSpan = false;
   ccLines(e).forEach(function (n) { body.appendChild(n); });
   var bub = bubbleLine(e, progs, level);
   if (bub) tipLine(body, null, bub);
@@ -3915,14 +3948,16 @@ function effectTooltip(e, progs, D, level) {
     var per = progAt(progs, v.perPulseProgression, level);
     var vcls = isHeal(e) ? "vital heal" : (e.harmful ? "vital harm" : "vital");
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
-                        e.pulseCount ? " on application" : "", false);
+                        e.pulseCount ? "initial" : "instant");
     if (one) tipLine(body, null, one, vcls);
     // Whenever there IS a per-pulse value - not only when a pulse COUNT is
     // set. 727 effects pulse without counting, 639 of them harmful, and every
     // one of them drew nothing at all.
-    var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance,
-                        overTimeTail(e), true);
+    var rep = vitalLine(e, v, per, v.vpsPerPulse, v.perPulseVariance, "pulse");
     if (rep) tipLine(body, null, rep, vcls);
+    // "... for 24 seconds." IS the duration, so the foot does not say it
+    // again - the same rule effectBody follows inside a skill panel.
+    if (rep && e.pulseCount) saidSpan = true;
   }
   // Resolve the curve at the chosen level. Without this the panel printed
   // "Scales with level: Finesse Rating" while a level box sat directly
@@ -3937,23 +3972,43 @@ function effectTooltip(e, progs, D, level) {
   // left out here - see overTimeGroups.
   overTimeBlocks(e, progs, level, { withInitial: false, duration: false })
     .forEach(function (b) { box.appendChild(b); });
-  expireBlocks(e, progs, level).forEach(function (b) { box.appendChild(b); });
-
-  // Effect_TimeDisplay_Base is the last of the client's four rows, and the
-  // panel ends there. Chance, cure type, stacking and what applies it are all
-  // on the page below - the tooltip is the tooltip.
+  /* An aura changes nothing of its own; what it does is its payload, under
+     the client's "Aura - affects ... within N metres:" header - drawn exactly
+     as a skill panel draws the same aura (effectBlocks), which also brings the
+     aura's own expiry group with it. */
+  var auraDrawn = false;
+  if (e.aura && e.aura.radius !== undefined && !body.children.length) {
+    EFFECT_CACHE[String(e.id)] = e;
+    effectBlocks({ userEffects: [{ id: e.id }] }, progs, level)
+      .forEach(function (b) { box.appendChild(b); auraDrawn = true; });
+  }
+  // The time rows close the effect's own content and come BEFORE what it
+  // leaves behind when it runs out (Ring of Fire, 1879489739: "Every 1
+  // second: / N Fire Damage / Expires if out of combat ... / Applied on
+  // expiration: / N Fire Damage").
   var foot = el("div", "tipbody");
   // permanent wins: such an effect still carries an interval, and printing
   // that as its duration says it lasts a second when it never expires
   if (e.permanent) {
     // nothing where there is nothing to say - see durationNode
     if (e.expiresOutOfCombat) tipLine(foot, null, combatOnlyNote(), "time");
+  } else if (saidSpan) {
+    // the per-pulse line already closed with "for N seconds."
   } else if (e.pulseCount && e.interval) {
-    tipLine(foot, "Duration:", secs(e.interval * e.pulseCount), "time");
+    tipW(foot, "duration", "time", secs(e.interval * e.pulseCount));
   } else if (e.duration !== undefined) {
-    tipLine(foot, "Duration:", secs(e.duration), "time");
+    tipW(foot, "duration", "time", secs(e.duration));
+  }
+  // An effect that lives on a hotspot or summon and only lasts in combat
+  // (normalize.py marks the payload `spawnPayload`). The client's wording for
+  // these is the short one, never "for 9 seconds".
+  if (e.spawnPayload && e.combatOnly && !e.expiresOutOfCombat) {
+    tipLine(foot, null, W("expiresOutOfCombatShort"), "time");
   }
   if (foot.children.length) box.appendChild(foot);
+  if (!auraDrawn) {
+    expireBlocks(e, progs, level).forEach(function (b) { box.appendChild(b); });
+  }
   return box;
 }
 
@@ -3998,7 +4053,18 @@ function overTimeTail(e) {
    the repeating form keeps the verb. And a repeating HARM has no verb at all -
    it reads like the damage line at the top of a skill panel, "202 - 224
    Lightning Damage", not "Deals 202 Lightning damage". */
-function vitalLine(e, v, value, vps, variance, tail, overTime) {
+/* `when` says which of the client's vital frames this line is:
+     "instant"  it lands once and does not repeat
+     "initial"  the landing pulse of something that repeats
+     "pulse"    the repeating line itself
+   The frames themselves are StringTable 0x250001DA - four families (Heals /
+   Restores / Damage / Drains) times three shapes (initially / every / every
+   ... for). Which family is the client's own split, not ours: Morale takes
+   Heals and every other vital takes Restores, harm to Morale is Damage and
+   harm to a resource is Drains. */
+function vitalLine(e, v, value, vps, variance, when) {
+  var overTime = when === "pulse";
+  var tail = "";
   if (!value) return null;
   var harmful = e.harmful;
   var vital = e.vitalType ? enumWord("vitalType", e.vitalType) : "Morale";
@@ -4009,13 +4075,58 @@ function vitalLine(e, v, value, vps, variance, tail, overTime) {
      are the same kind of resource; only plain Power is confirmed. Morale
      keeps "Restores" / "Deals", which IS confirmed - Dire Need reads
      "Restores 30% of maximum Morale". */
-  var signed = vital !== "Morale" && !overTime;
+  /* MORALE has one more split inside it, confirmed on Rousing Words
+     (1879109284), whose two aura legs word the same vital two ways:
+
+       instant, absolute   +14656 - 20937 Morale
+       over time           Heals 1,378 - 1,969 Morale initially.
+                           Heals 6,529 - 9,328 Morale every 4.0 seconds ...
+       instant, percent    Restores 50% of maximum Morale
+
+     So an instant absolute morale change is signed like any other resource,
+     a repeating one takes the verb "Heals" rather than "Restores" - which
+     stays on Power, confirmed by Power of Knowledge's "Restores 86 - 96
+     Power every 1.0 seconds." - and only the percent form keeps "Restores"
+     when it lands at once (Dire Need, Wisdom of the Council). */
+  /* Which verb an EFFECT takes is decided by the effect, not by which of its
+     two lines is being written: a heal-over-time heads both of them "Heals",
+     the landing pulse included ("Heals 1,378 - 1,969 Morale initially."). So
+     the test is whether the thing pulses at all. */
+  var pulsing = !!e.pulseCount || overTime;
+  var signed = !pulsing &&
+               (vital !== "Morale" || (!harmful && !v.percent));
   var lead = signed ? (harmful ? "-" : "+")
            : harmful ? (overTime ? "" : "Deals ")
+           : (pulsing && vital === "Morale") ? "Heals "
            : "Restores ";
   var unit = harmful ? (overTime ? harmUnit(e, vital) : (vital === "Morale" ? "damage" : vital))
                      : vital;
   var type = e.damageType ? enumWord("damageType", e.damageType) + " " : "";
+
+  /* The client's frame for this line, or null where it has none - an instant
+     absolute change is "+193 Power" with no frame behind it, and the scaled
+     "x V" form is ours rather than the client's. The interval always prints
+     to one decimal because the frame's plural selector reads the PRINTED
+     number: "every 1.0 seconds", never "every 1 second". */
+  var iv = e.interval || e.duration;
+  var ivTxt = iv ? Number(iv).toFixed(1) : null;
+  var spanTxt = (iv && e.pulseCount) ? fmt(iv * e.pulseCount) : null;
+  function frame(amountTxt) {
+    var fam = harmful ? (vital === "Morale" ? "damage" : "drain")
+            : (pulsing && vital === "Morale") ? "heal" : "restore";
+    // Heals bakes "Morale" into its own text; every other family takes the
+    // vital - or, for damage, the damage type - as its second slot.
+    var args = [amountTxt];
+    if (fam === "damage") args.push(e.damageType ? enumWord("damageType", e.damageType) : "");
+    else if (fam !== "heal") args.push(vital);
+    if (when === "pulse" && ivTxt) {
+      return spanTxt
+        ? W.apply(null, [fam + "EveryFor"].concat(args, [ivTxt, spanTxt]))
+        : W.apply(null, [fam + "Every"].concat(args, [ivTxt]));
+    }
+    if (when === "initial") return W.apply(null, [fam + "Initial"].concat(args));
+    return null;
+  }
   /* DEAD END, recorded so it is not tried again: a vitals-per-second
      multiplier of exactly 1 is NOT a reliable "no scaling" marker. It looked
      like one - 40 of the 41 curves beside a vps of 1 read above 5 at the cap
@@ -4028,34 +4139,71 @@ function vitalLine(e, v, value, vps, variance, tail, overTime) {
   var span = el("span", "tv");
   var base = Math.abs(value) * (v.baseMultiplier || 1);
 
-  /* The amount, as the RANGE the client shows. `..._Variance` is the whole
-     spread, so the ends are the value give or take half of it - which is
-     also how describe.py's numToken has always read it. "86 - 96", not
-     "91  +/-10%". */
+  /* The amount, as the RANGE the client shows. `..._Variance` spreads the
+     value DOWNWARD: the top of the range is the value itself and the bottom
+     is the value less the whole variance. Bastion of Light at 160 is a 4,260
+     curve with a variance of 0.5, and the game prints "2,130 - 4,260 Light
+     Damage" - the old reading (value give or take half) printed
+     "3,195 - 5,325", over the real maximum. rangeText() is shared with the
+     flat damage line. */
   function amount(n) {
-    if (!variance) return num(n);
-    return num(n * (1 - variance / 2)) + " - " + num(n * (1 + variance / 2));
+    if (!variance) return numAmt(n);
+    return rangeText(n, variance);
   }
 
+  /* A percentage of the target's maximum is always one of the client's two
+     frames - "Restores 50% of maximum Morale" / "Subtracts 10% of maximum
+     Power" - whichever vital it is and whether or not it repeats. The site
+     used to write the harmful form as its own sentence and a resource restore
+     as "+10% of maximum Power"; both are the StringTable's now (tipimage). */
   if (v.percent && !scaled) {
     span.appendChild(el("span", null,
-      lead + fmt(base * 100, 3) + "% of maximum " + vital +
-      (!signed && harmful && !overTime ? " as " + type + "damage" : "") + tail));
+      W(harmful ? "subtractsMaxOf" : "restoresMaxOf",
+        fmt(base * 100, 3) + "%", vital)));
     return span;
   }
-  if (scaled) {
-    if (lead) span.appendChild(el("span", null, lead));
-    span.appendChild(el("code", "dmg", fmt(base * vps, 2) + " x V"));
-    span.appendChild(el("span", null, " " + type + unit + tail));
-    if (variance) {
-      span.appendChild(el("span", "muted",
-                          "  +/-" + fmt(variance * 100, 0) + "%"));
-    }
+
+  /* The amount text. A vitals-per-second coefficient is not a number the DAT
+     can finish (V is the character's own rating), so it is written "0.18 x V"
+     - but it now goes through the SAME frames as an absolute amount, so a
+     heal-over-time reads "Heals 0.18 x V Morale every 4.0 seconds for 24
+     seconds." rather than a bare "Heals 0.18 x V Morale". */
+  // a coefficient spreads down from its value the same way an amount does
+  var amt = !scaled ? amount(base)
+          : (variance ? fmt(base * vps * (1 - variance), 2) + " - " : "") +
+            fmt(base * vps, 2) + " x V";
+  function finish(text) {
+    span.appendChild(el("span", null, text));
     return span;
   }
-  span.appendChild(el("span", null,
-    lead + amount(base) + " " + type + unit + tail));
-  return span;
+
+  if (when === "pulse" || when === "initial") {
+    // no interval means no frame to put a repeating line in - say nothing
+    // rather than invent one
+    if (when === "pulse" && !ivTxt) return null;
+    var framed = frame(amt);
+    if (framed) return finish(framed);
+    /* wording.py maps no pulse-less drain ("drainEvery"); the one gap left in
+       the vital frames. Written plainly until the entry is found. */
+    var verb = harmful ? (vital === "Morale" ? "" : "Drains ")
+             : (pulsing && vital === "Morale") ? "Heals " : "Restores ";
+    return finish(verb + amt + " " + (harmful && vital === "Morale"
+      ? type + "Damage" : vital) + (when === "pulse"
+      ? " every " + ivTxt + " seconds." : " initially."));
+  }
+
+  // Lands once. A resource change, or a restore, is the client's signed
+  // "+_ _"; harm to Morale is the damage-line frame "_ _ Damage" - the same
+  // template the top of a skill panel uses - not the site's old "Deals ...".
+  if (signed || !harmful) {
+    return finish(W(harmful ? "minusAmount" : "plusAmount", amt, vital));
+  }
+  var dtype = e.damageType ? enumWord("damageType", e.damageType) : "";
+  if (variance && !scaled) {
+    return finish(W("damageRange", numAmt(base * (1 - variance)),
+                    numAmt(base), dtype));
+  }
+  return finish(W("damageOne", amt, dtype));
 }
 
 /* What a repeating harm calls what it takes off you: the client writes
@@ -4086,7 +4234,9 @@ function bubbleLine(e, progs, level) {
   } else {
     var v = b.value !== undefined ? b.value : progAt(progs, b.progression, level);
     if (v === null || v === undefined || !v) return null;
-    amount = num(v);
+    // an amount of temporary morale, so it groups like a heal rather than
+    // like a stat - an extrapolation from the damage/heal rule, not confirmed
+    amount = numAmt(v);
   }
   var vital = enumWord("vitalType", b.type || "Health") || "Morale";
   return "Applies a damage preventing bubble granting " + amount +
@@ -4129,9 +4279,12 @@ function reactiveHeader(r) {
   (r.on || []).forEach(function (t) {
     if (t !== "ALL") bits.push(enumWord("damageType", t) || titleCase(t));
   });
-  return "On " + (bits.length ? bits.join(", ") : "any") +
-         (r.skillOnly ? " skill hit" : " damage") +
-         (r.casterOnly ? " from the source of this effect" : "") + ":";
+  // "On _:" with the table's own "any" and "damage". "skill hit" and the
+  // source qualifier have no entry; they are kept because they are the only
+  // statement of the condition, and tipimage grades them as guesses.
+  return W("onWhat", (bits.length ? bits.join(", ") : W("any")) +
+           (r.skillOnly ? " skill hit" : " " + W("damageWord")) +
+           (r.casterOnly ? " from the source of this effect" : ""));
 }
 
 function reactiveAmount(leg, progs, level) {
@@ -4143,7 +4296,7 @@ function reactiveAmount(leg, progs, level) {
   }
   var v = leg.value !== undefined ? leg.value
         : progAt(progs, leg.progression, level);
-  return v === null || v === undefined ? null : num(Math.abs(v));
+  return v === null || v === undefined ? null : numAmt(Math.abs(v));
 }
 
 function reactiveChance(leg) {
@@ -4182,23 +4335,26 @@ function reactiveLines(e, progs, level) {
   var amt;
   if (reactiveFires(r.negate)) {
     amt = reactiveAmount(r.negate, progs, level);
-    if (amt) say(reactiveChance(r.negate) + "Negate " + amt + " damage");
+    if (amt) say(reactiveChance(r.negate) + W("negateDamage", amt));
   }
   if (reactiveFires(r.reflect)) {
     amt = reactiveAmount(r.reflect, progs, level);
     if (amt) {
-      say(reactiveChance(r.reflect) + "Reflect " + amt +
+      // "Reflect 4,260 Light damage" - the client's template carries the
+      // trailing "damage", and the type slot sits before it with its own space.
+      say(reactiveChance(r.reflect) + W("reflectAmount", amt,
           (r.reflect.damageType
-            ? " " + (enumWord("damageType", r.reflect.damageType) ||
-                     titleCase(r.reflect.damageType))
-            : "") + " damage");
+            ? (enumWord("damageType", r.reflect.damageType) ||
+               titleCase(r.reflect.damageType)) + " "
+            : "")));
     }
   }
   if (reactiveFires(r.reflectEffect)) {
-    payload(r.reflectEffect, "Reflect effect:");
+    payload(r.reflectEffect, W("reflectEffect"));
   }
-  if (reactiveFires(r.selfEffect)) payload(r.selfEffect, "Apply to yourself:");
-  if (r.removeOnProc && out.length) say("Removed once it triggers.");
+  if (reactiveFires(r.selfEffect)) payload(r.selfEffect, W("applyToSelf"));
+  // Effect_ReactiveVital_RemoveOnSuccessfulProc has no tooltip line in the
+  // vocabulary, so the panel says nothing for it (the page below still does).
   // the heading only where something came of it
   if (out.length) out.unshift(el("div", "tipeffwho react", reactiveHeader(r)));
   return out;
@@ -4495,19 +4651,17 @@ function dispelWording(e, level) {
   if (!e.dispelCategories || !e.dispelCategories.length) return null;
   if (dispelIsOwn(e)) return e.desc || e.descOverride;
   var n = e.dispelMax || 1;
-  var out = "Removes up to " + n + " " +
-    e.dispelCategories.map(function (c) {
-      return titleCase(categoryWord("dispelCategories", c));
-    }).join(", ") +
-    " effect" + (n === 1 ? "" : "s");
+  var cats = e.dispelCategories.map(function (c) {
+    return titleCase(categoryWord("dispelCategories", c));
+  }).join(", ");
   // Effect_DispelByResist_StrengthRestrictionOffset is added to the caster's
   // LEVEL, so this number moves with the level box: at 160 the client writes
-  // "with maximum strength of 165".
-  if (e.dispelStrengthOffset !== undefined) {
-    out += " with maximum strength of " +
-      ((level === undefined ? LEVEL_CAP : level) + e.dispelStrengthOffset);
-  }
-  return out + " from the target.";
+  // "with maximum strength of 165". It is the template's third slot, and
+  // empty where the effect sets no restriction.
+  var strength = e.dispelStrengthOffset === undefined ? "" :
+    W("dispelMaxStrength",
+      (level === undefined ? LEVEL_CAP : level) + e.dispelStrengthOffset);
+  return W("dispelUpTo", n, cats, strength);
 }
 
 /* A carrier applies nothing itself - it hands its nested effects on to
@@ -4536,9 +4690,8 @@ function isHeal(e) {
 
 function carrierLines(e) {
   if (e.fellowshipRange !== undefined) {
-    return { pre: [], header: "Effects applied to " +
-      (e.fellowshipWho || "the Fellowship") +
-      " within " + fmt(e.fellowshipRange) + " metres:" };
+    return { pre: [], header: W("appliedToWithin",
+      e.fellowshipWho || W("theFellowship"), fmt(e.fellowshipRange)) };
   }
   // An area carrier is the same shape: a radius, and whoever is standing in
   // it. Who that is comes from what the payload DOES rather than from the
@@ -4547,20 +4700,47 @@ function carrierLines(e) {
   // on the caster's own side, so a creep AoE would read backwards. A harmful
   // payload is aimed at enemies whoever throws it.
   if (e.areaRange !== undefined) {
-    return { pre: [], header: "Effects applied to " +
-      (e.harmful ? "enemies" : "allies") +
-      " within " + fmt(e.areaRange) + " metres:" };
+    // The client has its own line for each side rather than a who-slot.
+    return { pre: [], header: e.harmful
+      ? W("appliedToEnemies", fmt(e.areaRange))
+      : W("appliedToFriends", fmt(e.areaRange)) };
   }
   if (e.reviveVitals && e.reviveVitals.length) {
     return {
       pre: e.reviveVitals.map(function (v) {
-        return "Target revives with " + fmt(v.percent * 100, 3) + "% " +
-               vitalName(v.type);
+        return W("reviveWith", fmt(v.percent * 100, 3), vitalName(v.type));
       }),
-      header: "Effects to apply on revival:"
+      header: W("effectsOnRevival")
     };
   }
   return null;
+}
+
+/* An aura stands for as long as the skill does and hands its payload to
+   everyone inside its radius. Rousing Words (skill 1879109284) is two of them:
+
+       Aura - affects Fellowship members within 20 metres:
+       Every 1 second:
+       Restores ... Morale
+
+   617 effects carry one and 138 skill panels name one, and every one of them
+   drew NOTHING - an aura changes no property of its own, so effectBody
+   returned zero lines and the block went with it.
+
+   Who it reaches is read off what the payload DOES, not off the
+   Effect_Aura_Affects* flags - the same reasoning as the area carrier, since
+   those name entity categories (Monster, Player) and which of them count as
+   enemies depends on the caster's own side. Nor off the aura's OWN harmful
+   flag: an aura is a wrapper and carries `harmful: false` even when it is
+   pure poison - Sickly Presence (1879458378) is a monster aura dealing 27540
+   Common damage a tick and the flag is false on it. `hostile` is read back
+   off the blocks the payload produced, which already carry the payload's own
+   harm class. */
+function auraHeader(e, hostile) {
+  // The client has no "enemies" aura header - the general form is "affects
+  // targets", and the Fellowship form is its own line.
+  return hostile ? W("auraTargets", fmt(e.aura.radius))
+                 : W("auraFellowship", fmt(e.aura.radius));
 }
 
 /* An over-time applier is a carrier that fires more than once. It holds two
@@ -4612,15 +4792,13 @@ function overTimeGroups(e, withInitial) {
   });
   var groups = [];
   if (withInitial && init.length) {
-    groups.push({ header: "On application:", nested: init });
+    groups.push({ header: W("onApplication"), nested: init });
   }
-  if (pulse.length) {
-    var iv = e.interval || e.duration;
-    groups.push({
-      header: iv ? "Every " + fmt(iv) + " second" + (iv === 1 ? "" : "s") + ":"
-                 : "On each pulse:",
-      nested: pulse
-    });
+  // With no interval there is no "Every _ seconds:" to write, and the table
+  // has no other heading for a pulse list - so it is not drawn.
+  var iv = e.interval || e.duration;
+  if (pulse.length && iv) {
+    groups.push({ header: W("everySeconds", fmt(iv)), nested: pulse });
   }
   return groups.length ? groups : null;
 }
@@ -4658,6 +4836,18 @@ function groupBlock(e, g, progs, level, withDuration, held) {
     if (isHeal(ne)) heal = true;
     var before = host.children.length;
     effectBody(host, ne, null, progs, level);
+    // A payload with nothing of its own may be a combo router, the same as a
+    // reference on the panel - Rousing Words' improved aura reaches its
+    // heal-over-time through one. Follow the untraited branch and let it
+    // supply the colour too.
+    if (host.children.length === before) {
+      var base = comboBaseBranch(ne);
+      if (base) {
+        effectBody(host, base, null, progs, level);
+        if (isHeal(base)) heal = true;
+        ne = base;
+      }
+    }
     tagPayload(host, before, ne);
   });
   if (!host.children.length) return null;
@@ -4706,6 +4896,7 @@ function overTimeBlocks(e, progs, level, opts) {
    nothing has confirmed. describe.py already tells the two apart in prose
    ("On removal, applies" / "On expiration, applies"), so the wording is there
    to copy when somebody reports what the client writes. */
+var AURA_VIA = "Effect_Aura_Applied_Effect_Array";
 var EXPIRE_VIA = "EffectGenerator_Countdown_ExpireEffectList";
 
 function isExpireVia(via) {
@@ -4722,7 +4913,7 @@ function expireBlocks(e, progs, level) {
   var list = (e.nested || []).filter(function (n) { return isExpireVia(n.via); });
   if (!list.length) return [];
   // red whatever sits above it - see the .tipeffwho.expiry rule
-  var blk = groupBlock(e, { header: "Applied on expiration:", cls: "expiry",
+  var blk = groupBlock(e, { header: W("onExpiration"), cls: "expiry",
                             nested: list }, progs, level, false);
   return blk ? [blk] : [];
 }
@@ -4832,12 +5023,26 @@ function durationNode(e, ref, held) {
   var dur = (ref && ref.duration !== undefined) ? ref.duration : e.duration;
   if (e.pulseCount && dur) dur = dur * e.pulseCount;
   if (dur !== undefined && dur > 0) {
-    return el("div", "tipdur", "Duration: " + secs(dur));
+    return el("div", "tipdur", W("duration", secs(dur)));
   }
   return null;
 }
 
-function effectBody(blk, e, ref, progs, level, held) {
+/* Set for the length of one skill panel. A skill that declares its own pip
+   change has it in the foot already - Rousing Words (1879109284) reads
+   "Attunes: 1" there - so the pip EFFECT it applies is the same sentence
+   twice, and the client prints it once. Ameliorating Oration and Fixation
+   carry no pipChange at all and their "+1 Healing Attunement" line is the
+   only statement of it, so theirs stays.
+
+   A module flag rather than a seventh parameter because it depends on the
+   SKILL, and effectBlocks is the only place a skill is in scope - effectBody
+   is reached from four different callers, two of them nested. Cleared again
+   before effectBlocks returns, so an effect's own page never sees it set. */
+var PIP_SAID = false;
+
+function effectBody(blk, e, ref, progs, level, held, noDuration) {
+  if (PIP_SAID && e.kind === "pip") return 0;
   var before = blk.children.length;
   var dispel = dispelWording(e, level);
   if (dispel) {
@@ -4856,6 +5061,7 @@ function effectBody(blk, e, ref, progs, level, held) {
     return blk.children.length - before;
   }
   var lines = ccLines(e);
+  var saidSpan = false;
   var bub = bubbleLine(e, progs, level);
   if (bub) lines.push(el("div", "tipstat", bub));
   reactiveLines(e, progs, level).forEach(function (n) { lines.push(n); });
@@ -4867,12 +5073,20 @@ function effectBody(blk, e, ref, progs, level, held) {
   if (v) {
     var init = v.initial !== undefined ? v.initial
              : progAt(progs, v.initialProgression, level);
+    // The client's word for the landing pulse of a heal-over-time is
+    // "initially.", with the full stop the repeating line also ends on -
+    // "Heals 1,378 - 1,969 Morale initially." on Rousing Words.
     var one = vitalLine(e, v, init, v.vpsInitial, v.initialVariance,
-                        e.pulseCount ? " on application" : "", false);
+                        e.pulseCount ? "initial" : "instant");
     if (one) { var vl = el("div", "tipstat"); vl.appendChild(one); lines.push(vl); }
     var rep = vitalLine(e, v, progAt(progs, v.perPulseProgression, level),
-                        v.vpsPerPulse, v.perPulseVariance, overTimeTail(e), true);
+                        v.vpsPerPulse, v.perPulseVariance, "pulse");
     if (rep) { var vr = el("div", "tipstat"); vr.appendChild(rep); lines.push(vr); }
+    // "... every 4.0 seconds for 24 seconds." already IS the duration, so a
+    // "Duration: 24s" under it is the same number twice. Only where the tail
+    // states a span - a pulse-less line ("every 1.0 seconds.") says nothing
+    // about how long it runs and keeps its duration row.
+    if (rep && e.pulseCount) saidSpan = true;
   }
   (e.stats || []).forEach(function (st) {
     var line = statLine(resolveStat(st, progs, level), "level");
@@ -4892,7 +5106,7 @@ function effectBody(blk, e, ref, progs, level, held) {
   }
   // A duration on its own says nothing without the line it belongs to.
   if (!lines.length) return 0;
-  var dn = durationNode(e, ref, held);
+  var dn = (saidSpan || noDuration) ? null : durationNode(e, ref, held);
   if (dn) lines.push(dn);
   // A line that already carries its own link keeps it - a reactive effect's
   // payload is built by effectBody one level down and points at the effect it
@@ -4963,6 +5177,79 @@ function effectBlocks(s, progs, level) {
       return made;
     }
     var blk = el("div", cls);
+
+    /* What it SPAWNS is what it does. A Genesis effect drops a hotspot or
+       summons a creature and applies nothing itself, so the payload sits on
+       the spawned object - normalize.py splices those effects into `nested`
+       tagged with `spawn`. Without this the panel ended at the carrier with
+       nothing under it, which is what Bastion of Light (1879108999) did.
+       (Carried over from the retired game-tooltip renderer.) */
+    /* How the client lays it out (Bastion of Light, 1879466447):
+
+         Duration: 15s                                   <- how long it stays
+         2,130 - 4,260 Light Damage initially.           <- red: these land
+         2,130 - 4,260 Light Damage every 3.0 seconds       on ENEMIES
+         +5% Miss Chance
+         Expires if out of combat for a short amount of time.
+
+       No heading naming the object, the object's lifetime ABOVE the payload,
+       none of the payload's own durations (they are re-applied while you
+       stand in it), each line in the colour of the payload effect that made
+       it - not the genesis effect's, which is never harmful - and the short
+       out-of-combat line when the payload only lasts in combat. */
+    var spawnRefs = (e.nested || []).filter(function (n) { return n.spawn; });
+    if (spawnRefs.length) {
+      var sh = el("div");
+      var span = 0, combatOnly = false;
+      spawnRefs.forEach(function (n) {
+        var ne = EFFECT_CACHE[String(n.id)];
+        if (!ne) return;
+        var before = sh.children.length;
+        effectBody(sh, ne, null, progs, level, held, true);
+        tagPayload(sh, before, ne);
+        /* A payload that pulses (Ring of Fire's 1879489739) says nothing
+           itself - its "Every 1 second:" group is the content. Its expiry
+           group is not shown here: the game keeps that for the effect's own
+           page. */
+        (overTimeGroups(ne, true) || []).forEach(function (g) {
+          var gh = el("div");
+          g.nested.forEach(function (gn) {
+            var ge = EFFECT_CACHE[String(gn.id)];
+            if (!ge) return;
+            var b0 = gh.children.length;
+            effectBody(gh, ge, null, progs, level, held, true);
+            if (gh.children.length === b0) {
+              var gb = comboBaseBranch(ge);
+              if (gb) { effectBody(gh, gb, null, progs, level, held, true); ge = gb; }
+            }
+            tagPayload(gh, b0, ge);
+          });
+          if (!gh.children.length) return;
+          sh.appendChild(el("div", "tipeffwho", g.header));
+          while (gh.firstChild) sh.appendChild(gh.firstChild);
+        });
+        if (sh.children.length === before) return;
+        if (ne.combatOnly) combatOnly = true;
+        if (!ne.permanent) {
+          var d = ne.pulseCount && ne.duration ? ne.duration * ne.pulseCount
+                                               : (ne.duration || 0);
+          if (d > span) span = d;
+        }
+      });
+      if (sh.children.length) {
+        // the object's own lifetime; until normalize.py has emitted it, the
+        // longest payload says the same thing
+        var life = e.summonPermanent ? 0 : (e.summonDuration || span);
+        if (life) blk.appendChild(el("div", "tipdur", W("duration", secs(life))));
+        while (sh.firstChild) blk.appendChild(sh.firstChild);
+        if (combatOnly && !held) {
+          blk.appendChild(el("div", "tipdur", W("expiresOutOfCombatShort")));
+        }
+        made.push(blk);
+        return made;
+      }
+    }
+
     var carrier = carrierLines(e);
     if (carrier) {
       carrier.pre.forEach(function (t) {
@@ -4993,6 +5280,26 @@ function effectBlocks(s, progs, level) {
       made.push(blk);
       return made;
     }
+    /* An aura's payload goes through the FULL path rather than effectBody,
+       because it is usually an over-time applier and needs its own "Every N
+       seconds:" heading under the aura's. Same shape as the combo router
+       below - the payload is an ordinary reference reached one step later. */
+    if (e.aura && e.aura.radius !== undefined && depth < 2) {
+      var inner = [];
+      (e.nested || []).forEach(function (n) {
+        var ne = EFFECT_CACHE[String(n.id)];
+        if (!ne) return;
+        blocksFor(ne, null, depth + 1).forEach(function (b) { inner.push(b); });
+      });
+      if (!inner.length) return made;
+      var hostile = inner.some(function (b) {
+        return (" " + b.className + " ").indexOf(" harm ") !== -1;
+      });
+      inner.forEach(function (b) { b.className += " inaura"; });
+      inner[0].insertBefore(el("div", "tipeffwho aura", auraHeader(e, hostile)),
+                            inner[0].firstChild);
+      return inner;
+    }
     // Nothing of its own: if it is a router, draw what it routes to untraited.
     var base = depth < 2 ? comboBaseBranch(e) : null;
     return base ? blocksFor(base, null, depth + 1) : made;
@@ -5016,8 +5323,11 @@ function effectBlocks(s, progs, level) {
   var held = !!(s.channel ||
                 (s.toggleEffects && s.toggleEffects.length) ||
                 (s.toggleUserEffects && s.toggleUserEffects.length));
+  PIP_SAID = s.pipChange !== undefined && s.pipChange !== null;
 
-  refs.slice(0, 6).forEach(function (ref) {
+  // Every effect, as the client does - the old six-block cap and its "and N
+  // more" line were the site's own.
+  refs.forEach(function (ref) {
     var e = EFFECT_CACHE[String(ref.id)];
     if (!e) return;
     // no application chance of its own: it never lands unless something
@@ -5025,19 +5335,20 @@ function effectBlocks(s, progs, level) {
     if (e.probability === 0) return;
     var made = blocksFor(e, ref, 0);
     if (made.length && onUse[ref.id]) {
-      made[0].insertBefore(el("div", "tipeffwho", "on use:"), made[0].firstChild);
+      /* "On Use:" - capitals on both words, as the client writes it.
+         The heading itself is a section marker and reads in the dim duration
+         green like Cooldown; everything INSIDE the section is effect content
+         and reads in the effect green, headings included. Rousing Words
+         (1879109284) shows the two side by side: its toggle aura's
+         "Aura - ... / Every 1 second:" are dim, and the same two lines
+         under On Use are lime. */
+      made.forEach(function (b) { b.className += " onuse"; });
+      made[0].insertBefore(el("div", "tipeffwho onusehead", W("onUse")),
+                           made[0].firstChild);
     }
     made.forEach(function (b) { out.push(b); });
   });
-  // the panel quotes at most six, the way the client's box is bounded - but
-  // saying so beats letting the rest disappear without a word
-  if (refs.length > 6) {
-    var rest = el("div", "tipeff");
-    rest.appendChild(el("div", "tipeffdesc", "and " + (refs.length - 6) +
-      " more effect" + (refs.length - 6 === 1 ? "" : "s") +
-      " - listed in full below"));
-    out.push(rest);
-  }
+  PIP_SAID = false;
   return out;
 }
 
@@ -5100,7 +5411,9 @@ function statWording(st, meta) {
   if (!d) return null;
   d = expandSelector(d);
   if (d.indexOf("*") === -1) return d;
-  if (st.value === undefined || st.value === null) return null;
+  // Only a number goes in the slot. A Set of true (Death_ImmuneToDefeat,
+  // "x * Outgoing Damage") printed "x1 Outgoing Damage".
+  if (typeof st.value !== "number") return null;
   /* A wording whose LAST placeholder is followed by no words at all wants the
      property's NAME there, not the value a second time. Duty Bound (effect
      1879084065) words its Health_MaxLevel modifier "+ *   * " and the client
@@ -5155,8 +5468,12 @@ function statLine(st, xLabel) {
   var name = meta ? meta.n : st.stat;
   var v = st.value;
   var said = statWording(st, meta);
-  if (v === undefined || v === null || typeof v === "boolean") {
+  if (v === undefined || v === null || typeof v !== "number") {
     if (said) return multiLine("tipstat", said);
+    // A skill or effect panel prints only what the client can word: a bitfield
+    // modifier's flag names and "Scales with level: X" were the site's own
+    // lines. A trait's rank panel still uses them (xLabel "rank").
+    if (xLabel === "level") return null;
     if (st.flags && st.flags.length) {
       return el("div", "tipstat",
                 name + ": " + st.flags.map(spaceWords).join(", "));
@@ -5182,9 +5499,15 @@ function statLine(st, xLabel) {
     // sets were being lost this way.
     return said ? multiLine("tipstat", said) : null;
   }
-  var line = said ? multiLine("tipstat", said)
-                  : el("div", "tipstat", statAmount(st, meta, true) + " " + name);
-  return line;
+  // PropertyMetaData_HideIdentityExaminationMod (set on 5,247 of 5,248
+  // properties): a Multiply of exactly 1 changes nothing and prints nothing
+  // unless the author hung a sentence on it.
+  if (st.op === "Multiply" && v === 1 && !said) return null;
+  if (said) return multiLine("tipstat", said);
+  var amt = statAmount(st, meta, true);
+  var key = amt.charAt(0) === "x" ? "timesAmount"
+          : amt.charAt(0) === "-" ? "minusAmount" : "plusAmount";
+  return el("div", "tipstat", W(key, amt.replace(/^[x+-]/, ""), name));
 }
 
 /* Some wordings carry their own line breaks, written as a literal \n - and
@@ -5269,10 +5592,8 @@ function damageExpr(a, progs, level) {
   if (resolved !== null) {
     span.appendChild(el("span", "resolved", "  =  " + num(resolved)));
   }
-  var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
-           : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
   var lead = [enumWord("damageType", a.damageType) || null,
-              hand ? "(" + hand + ")" : null]
+              hand(a) ? "(" + hand(a) + ")" : null]
     .filter(Boolean).join(" ");
   span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
   var tail = [];
@@ -5284,18 +5605,33 @@ function damageExpr(a, progs, level) {
 /* The same line for a hook whose damage is a flat number rather than an
    expression - no W, no A, nothing for the reader to supply. */
 function flatDamage(a, value) {
+  /* "29,070 - 32,130 Common Damage" - StringTable 0x250001AF's own damage
+     line. The variance is the whole spread, so the ends are the value give or
+     take half of it, the same reading every vital line uses. It used to be
+     "30,600 +/-10% Common Damage", which is not a shape the client has. */
   var span = el("span", "tv");
-  span.appendChild(el("code", "dmg", num(value)));
-  if (a.damageMaxVariance) {
-    span.appendChild(el("span", "muted", "  +/-" + fmt(a.damageMaxVariance * 100, 0) + "%"));
-  }
-  var hand = a.usesPrimary ? "Main-hand" : a.usesSecondary ? "Off-hand"
-           : a.usesRanged ? "Ranged" : a.usesTactical ? "Tactical" : null;
   var lead = [enumWord("damageType", a.damageType) || null,
-              hand ? "(" + hand + ")" : null]
+              hand(a) ? "(" + hand(a) + ")" : null]
     .filter(Boolean).join(" ");
-  span.appendChild(el("span", null, "  " + (lead ? lead + " " : "") + "Damage"));
+  var v = a.damageMaxVariance;
+  span.appendChild(el("span", null, v
+    ? W("damageRange", numAmt(value * (1 - v)), numAmt(value), lead)
+    : W("damageOne", numAmt(value), lead)));
   return span;
+}
+
+/* "lo - hi" for a value and its variance: the variance spreads DOWN from the
+   value, so the value is the top of the range (Bastion of Light: 4,260 at a
+   variance of 0.5 is "2,130 - 4,260"). */
+function rangeText(n, variance) {
+  return numAmt(n * (1 - variance)) + " - " + numAmt(n);
+}
+
+/* Which implement a hook draws on, in the client's own words. */
+function hand(a) {
+  return a.usesPrimary ? W("mainHand") : a.usesSecondary ? W("offHand")
+       : a.usesRanged ? W("rangedHand") : a.usesTactical ? W("tacticalWord")
+       : null;
 }
 
 /* W was described here as "its DPS over the skill's animation", which is wrong
@@ -5591,8 +5927,8 @@ function renderItem(it, D, MS, progs) {
   var dmg = null;
   if (it.damage) {
     var v = it.damageVariance || 0;
-    dmg = v ? num(it.damage * (1 - v)) + " - " + num(it.damage * (1 + v))
-            : num(it.damage);
+    dmg = v ? numAmt(it.damage * (1 - v)) + " - " + numAmt(it.damage * (1 + v))
+            : numAmt(it.damage);
     if (it.damageType) dmg += " " + spaceWords(enumWord("damageType", it.damageType));
   }
   var bind = it.bind ? "Binds " + it.bind : (it.bindAccount ? "Bound to account" : null);
@@ -5980,19 +6316,19 @@ function renderSet(st, D, MS, progs) {
 
 /* ---------------- your character ---------------- */
 
-/* Level, class and the two weapon numbers, remembered between visits. Every
-   page already had its own level box; setting the same number over and over
-   was the single most repetitive thing about using the site. Stored per
-   browser, never sent anywhere. */
-var PREFS = (function () {
-  try { return JSON.parse(localStorage.getItem("lotrodb.prefs")) || {}; }
-  catch (e) { return {}; }
-})();
+/* Level, class and the weapon numbers for THIS visit only. They used to be
+   saved in localStorage, which meant a level typed once (154, say) came back
+   every session and quietly overrode the level cap on every panel, however
+   often a page's own level box was set back to 160. Nothing is remembered
+   between visits now; a fresh page always opens at the level cap. */
+var PREFS = {};
+
+// clear what earlier versions of the site left behind, so a stale level
+// cannot resurface
+try { localStorage.removeItem("lotrodb.prefs"); } catch (e) { /* no storage */ }
 
 function savePrefs() {
-  // a private window, or storage switched off, must not break the page
-  try { localStorage.setItem("lotrodb.prefs", JSON.stringify(PREFS)); }
-  catch (e) { /* nothing to do - the settings just do not persist */ }
+  /* deliberately does nothing - see PREFS */
 }
 
 /* The level a page should open at: the reader's own, when they have said. */

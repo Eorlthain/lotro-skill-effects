@@ -1583,3 +1583,25 @@ a.stacklink:hover .stackcount {
 .tip .tl.vital {
   color: var(--tip-mods);
 }
+
+/* An aura's heading, and every heading under it. "Aura - affects Fellowship
+   members within 20 metres:" introduces the lines below it, so it takes their
+   size - but the colour is decided by the SECTION it sits in, not by the aura.
+
+   Outside "On Use:" it stays the dim duration green every other group heading
+   uses. Inside the On Use section the whole block is effect content and reads
+   in the effect green, headings included - "On Use:" itself excepted, since
+   that one is the section marker and belongs with Cooldown. Rousing Words
+   (1879109284) is the case that shows both at once. */
+.tip .tipeffwho.aura,
+.tip .tipeff.inaura .tipeffwho {
+  font-size: 12px;
+}
+
+.tip .tipeff.onuse .tipeffwho {
+  color: var(--tip-mods);
+}
+
+.tip .tipeff.onuse .tipeffwho.onusehead {
+  color: var(--tip-time);
+}
