@@ -227,7 +227,9 @@ function preloadTipEffects(s) {
      prints; a router's untraited branch and an aura's payload are drawn as
      references of their own, so each can be a carrier again. Rousing Words
      (1879109284) is the deepest real chain: aura -> over-time applier ->
-     combo router -> the heal-over-time, four levels from the skill.
+     combo router -> the heal-over-time, four levels from the skill. A
+     spawned object's pulse can hand on an area carrier (Ring of Fire's shape
+     with a carrier under it) which is six, so six it is.
 
      Every level is a handful of ids and every fetch is shard-cached, so the
      cost is one or two files, not a walk of the graph. `seen` stops a cycle
@@ -271,7 +273,7 @@ function preloadTipEffects(s) {
       return descend(next, left - 1);
     });
   }
-  return descend(Object.keys(ids), 4);
+  return descend(Object.keys(ids), 6);
 }
 
 /* The same one level down, for an EFFECT's own page. Nothing was preloaded
@@ -4819,6 +4821,78 @@ function tagPayload(host, from, ne) {
   }
 }
 
+/* One payload inside a group or a carrier, drawn the way the skill panel would
+   draw it on its own.
+
+   A payload can be a carrier itself. A Murder of Crows (skill 1879447485)
+   pulses an AREA effect, and Nature's Fury (1879271189) pulses two of them
+   next to a plain hit:
+
+       Every 2 seconds:
+       28174 Frost Damage
+       Effects applied to enemies within 5 metres:
+       7983 Frost Damage
+       Effects applied to enemies within 5 metres:
+       11,342 Fire Damage every 2.0 seconds for 10 seconds.
+       15% chance to apply 18331 Lightning Damage
+       Duration: 10s
+
+   effectBody draws nothing for a carrier - it changes no property - so the
+   whole area half of both panels was silently dropped. A carrier here gets
+   its own "Effects applied to ..." heading with its payload under it, one
+   level down, the same as a carrier the skill applies directly.
+
+   A payload that only lands some of the time says so in front of its first
+   line: "15% chance to apply ..." (0x250001AF token 95371481). Only for a
+   chance between 0 and 1 - a payload with no chance of its own (0, supplied by
+   a trait) is drawn as it lands once granted, which is how the game shows
+   Fierce Lightning on a Loremaster who has it.
+
+   `st.heal` is set when anything drawn restores morale, for the block's
+   colour. Returns how many rows were added to `host`. */
+function payloadBody(host, ne, progs, level, held, noDuration, st, depth) {
+  depth = depth || 0;
+  var before = host.children.length;
+  var carrier = depth < 3 ? carrierLines(ne) : null;
+  if (carrier) {
+    var inner = el("div");
+    (ne.nested || []).forEach(function (n) {
+      var pe = EFFECT_CACHE[String(n.id)];
+      if (pe) payloadBody(inner, pe, progs, level, held, noDuration, st, depth + 1);
+    });
+    carrier.pre.forEach(function (t) { host.appendChild(el("div", "tipstat", t)); });
+    if (inner.children.length) {
+      host.appendChild(el("div", "tipeffwho", carrier.header));
+      while (inner.firstChild) host.appendChild(inner.firstChild);
+    }
+    return host.children.length - before;
+  }
+  if (st && isHeal(ne)) st.heal = true;
+  effectBody(host, ne, null, progs, level, held, noDuration);
+  // A payload with nothing of its own may be a combo router, the same as a
+  // reference on the panel - Rousing Words' improved aura reaches its
+  // heal-over-time through one. Follow the untraited branch and let it
+  // supply the colour too.
+  if (host.children.length === before) {
+    var base = comboBaseBranch(ne);
+    if (base) {
+      effectBody(host, base, null, progs, level, held, noDuration);
+      if (st && isHeal(base)) st.heal = true;
+      ne = base;
+    }
+  }
+  if (host.children.length === before) return 0;
+  tagPayload(host, before, ne);
+  var p = ne.probability;
+  if (p !== undefined && p > 0 && p < 0.999) {
+    var first = host.children[before];
+    var tgt = first.tagName === "A" && first.firstChild ? first.firstChild : first;
+    tgt.insertBefore(document.createTextNode(
+      W("chanceToApply", fmt(p * 100, 1)) + " "), tgt.firstChild);
+  }
+  return host.children.length - before;
+}
+
 /* A heading and the effects under it. Shared by every group a panel draws -
    the two over-time lists and the on-expiry list - because they differ only
    in the words and in whether the carrier's own total closes the block.
@@ -4827,32 +4901,16 @@ function tagPayload(host, from, ne) {
    effects that never arrive. */
 function groupBlock(e, g, progs, level, withDuration, held) {
   var host = el("div");
-  var heal = false;
+  // A carrier is only a wrapper, so what it hands on decides the colour -
+  // the heal case only, as everywhere else.
+  var st = { heal: false };
   g.nested.forEach(function (n) {
     var ne = EFFECT_CACHE[String(n.id)];
-    if (!ne) return;
-    // A carrier is only a wrapper, so what it hands on decides the colour -
-    // the heal case only, as everywhere else.
-    if (isHeal(ne)) heal = true;
-    var before = host.children.length;
-    effectBody(host, ne, null, progs, level);
-    // A payload with nothing of its own may be a combo router, the same as a
-    // reference on the panel - Rousing Words' improved aura reaches its
-    // heal-over-time through one. Follow the untraited branch and let it
-    // supply the colour too.
-    if (host.children.length === before) {
-      var base = comboBaseBranch(ne);
-      if (base) {
-        effectBody(host, base, null, progs, level);
-        if (isHeal(base)) heal = true;
-        ne = base;
-      }
-    }
-    tagPayload(host, before, ne);
+    if (ne) payloadBody(host, ne, progs, level, undefined, false, st);
   });
   if (!host.children.length) return null;
   var blk = el("div", "tipeff" + (e.harmful ? " harm" : "") +
-                      (heal ? " heal" : ""));
+                      (st.heal ? " heal" : ""));
   blk.appendChild(el("div", "tipeffwho" + (g.cls ? " " + g.cls : ""), g.header));
   while (host.firstChild) blk.appendChild(host.firstChild);
   if (withDuration && !blk.querySelector(".tipdur")) {
@@ -5215,14 +5273,7 @@ function effectBlocks(s, progs, level) {
           var gh = el("div");
           g.nested.forEach(function (gn) {
             var ge = EFFECT_CACHE[String(gn.id)];
-            if (!ge) return;
-            var b0 = gh.children.length;
-            effectBody(gh, ge, null, progs, level, held, true);
-            if (gh.children.length === b0) {
-              var gb = comboBaseBranch(ge);
-              if (gb) { effectBody(gh, gb, null, progs, level, held, true); ge = gb; }
-            }
-            tagPayload(gh, b0, ge);
+            if (ge) payloadBody(gh, ge, progs, level, held, true);
           });
           if (!gh.children.length) return;
           sh.appendChild(el("div", "tipeffwho", g.header));
@@ -5258,17 +5309,17 @@ function effectBlocks(s, progs, level) {
       // Build the payload first: with nothing in it the header would announce
       // effects that never arrive.
       var host = el("div");
+      // A carrier is only a wrapper, so what it hands on decides the colour.
+      // Only the heal case: the carrier's own harmful flag already sets
+      // "harm", and adding it from the payload too gave a carrier with one
+      // harmful and one restorative nested effect both classes at once -
+      // "Effects applied to allies" in the red kept for debuffs.
+      var cst = { heal: false };
       (e.nested || []).forEach(function (n) {
         var ne = EFFECT_CACHE[String(n.id)];
-        if (!ne) return;
-        // A carrier is only a wrapper, so what it hands on decides the colour.
-        // Only the heal case: the carrier's own harmful flag already sets
-        // "harm", and adding it from the payload too gave a carrier with one
-        // harmful and one restorative nested effect both classes at once -
-        // "Effects applied to allies" in the red kept for debuffs.
-        if (isHeal(ne)) blk.className += " heal";
-        effectBody(host, ne, null, progs, level);
+        if (ne) payloadBody(host, ne, progs, level, undefined, false, cst, 1);
       });
+      if (cst.heal) blk.className += " heal";
       if (host.children.length) {
         blk.appendChild(el("div", "tipeffwho", carrier.header));
         while (host.firstChild) blk.appendChild(host.firstChild);

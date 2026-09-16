@@ -1605,3 +1605,31 @@ a.stacklink:hover .stackcount {
 .tip .tipeff.onuse .tipeffwho.onusehead {
   color: var(--tip-time);
 }
+
+/* ---------- tooltip text size ----------
+   Every font on the skill, effect and trait panels is one pixel larger than
+   the base rules above give it. Scoped under .tip so the same classes used on
+   the rest of the page (a stat line on a set bonus, a gambit row) keep their
+   size. The 12.5px rule comes first: the later .react / .aura headings are
+   more specific in intent and carry their own 13px. */
+.tip { font-size: 15px; }
+.tip .tipname { font-size: 19px; }
+.tip .tipsub { font-size: 12px; }
+.tip .tipeffwho { font-size: 12.5px; }
+.tip .tl,
+.tip code.dmg,
+.tip .tipdesc,
+.tip .tipeffdesc,
+.tip .tipstat,
+.tip .tipdur,
+.tip .tipresist,
+.tip .tipeffflavour,
+.tip .gambit .gl,
+.tip .tipearned,
+.tip .tipwho,
+.tip .tiprank .rl,
+.tip .tipcost,
+.tip .tipmust,
+.tip .tipeffwho.react,
+.tip .tipeffwho.aura,
+.tip .tipeff.inaura .tipeffwho { font-size: 13px; }

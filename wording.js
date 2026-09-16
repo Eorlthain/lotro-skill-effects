@@ -233,6 +233,12 @@ var WORDING = {
    "% chance to"
   ]
  },
+ "chanceToApply": {
+  "parts": [
+   "",
+   "% chance to apply"
+  ]
+ },
  "chanceToX": {
   "parts": [
    "",
