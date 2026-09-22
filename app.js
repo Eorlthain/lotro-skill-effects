@@ -9,8 +9,8 @@
 (function () {
   var banner = document.createElement("div");
   banner.id = "banner";
-  banner.innerHTML = 'This site is a work in progress and may contain mistakes. ' +
-    'Join the Fridge Discord: <a href="https://discord.gg/TyyG5hnBbg" target="_blank" rel="noopener">https://discord.gg/TyyG5hnBbg</a>';
+  banner.innerHTML = 'Work in progress - some numbers may be wrong. ' +
+    'Report them on the <a href="https://discord.gg/TyyG5hnBbg" target="_blank" rel="noopener noreferrer">Fridge Discord</a>.';
   document.body.insertBefore(banner, document.body.firstChild);
 })();   
    
@@ -1553,6 +1553,9 @@ function progChart(host, progs, progId, label) {
 function renderSkill(s, progs, D, MS, ET) {
   // a monster-play skill never has traceries or essences behind it
   var gearOk = usesGear(ownerClasses(s), D);
+  // whether "Effects with no chance of their own" will be drawn, which is what
+  // makes it safe for the lists above to leave those effects out
+  var gatedShown = !!(D && MS);
   var host = el("div");
   var head = el("div", "head");
   var img = el("img");
@@ -1722,12 +1725,13 @@ function renderSkill(s, progs, D, MS, ET) {
 
     var hookEffects = [];
     s.attacks.forEach(function (a) {
-      ["targetEffects", "positionalEffects", "superCritEffects"].forEach(function (k) {
+      HOOK_SLOTS.forEach(function (k) {
         (a[k] || []).forEach(function (e) {
           hookEffects.push({ id: e.id, duration: e.duration, via: k });
         });
       });
     });
+    hookEffects = ungated(hookEffects, gatedShown);
     if (hookEffects.length) {
       section(host, "Effects applied on hit",
               linkList(hookEffects, "effect", traceryLine(ET, gearOk)));
@@ -1744,8 +1748,15 @@ function renderSkill(s, progs, D, MS, ET) {
    ["requiredEffects", "Requires these effects"],
    ["barringEffects", "Barred by these effects"],
    ["consumedEffects", "Requires and consumes these effects"]].forEach(function (pair) {
-    if (s[pair[0]]) {
-      section(host, pair[1], linkList(s[pair[0]], "effect", traceryLine(ET, gearOk)));
+    if (!s[pair[0]]) return;
+    // Only the slots the chance table covers. A required, barring or consumed
+    // effect is not one the skill applies at all, so its probability says
+    // nothing about whether it belongs on the page - and an override or
+    // additive-crit slot has no row waiting for it below.
+    var list = CHANCE_SLOTS.indexOf(pair[0]) === -1
+      ? s[pair[0]] : ungated(s[pair[0]], gatedShown);
+    if (list.length) {
+      section(host, pair[1], linkList(list, "effect", traceryLine(ET, gearOk)));
     }
   });
 
@@ -3175,15 +3186,39 @@ function enablesBlock(rec) {
    client leaves it off the tooltip, and so does the panel above - but the
    effect is real once something grants the chance, so it is listed here with
    the property that has to supply it and whatever sets that property. */
+/* The slots chanceBlock draws from, named once so the lists above and the
+   table below cannot drift apart - a slot dropped from one and not the other
+   would either lose a row or print it twice. */
+var HOOK_SLOTS = ["targetEffects", "positionalEffects", "superCritEffects"];
+var CHANCE_SLOTS = ["userEffects", "userEffectsAdditive", "toggleEffects",
+                    "toggleUserEffects", "critEffects"];
+
+/* An effect with a probability of 0 is never applied by the skill that lists
+   it: something has to supply the chance first, which is what the table below
+   is for. Printed flat beside the effects the skill really does apply, it says
+   the opposite - Lunge listed an unnamed Fellowship Manoeuvre effect under
+   "Effects on the caster" as though every Lunge fired it, when it needs the
+   Explosive Lunge set bonus to have any chance at all. 923 rows on 836 skills
+   move; 393 of those skills hit with nothing BUT gated effects and lose the
+   section, which is the honest answer, and every row lands in the table with
+   more said about it than the bare link had. Only when that table is actually
+   drawn - without D and MS it is not, and the rows would go nowhere. */
+function ungated(list, covered) {
+  if (!covered) return list || [];
+  return (list || []).filter(function (r) {
+    var e = EFFECT_CACHE[String(r.id)];
+    return !e || e.probability !== 0;
+  });
+}
+
 function chanceBlock(s, D, MS) {
   var refs = [];
   (s.attacks || []).forEach(function (a) {
-    ["targetEffects", "positionalEffects", "superCritEffects"].forEach(function (k) {
+    HOOK_SLOTS.forEach(function (k) {
       (a[k] || []).forEach(function (e) { refs.push(e); });
     });
   });
-  ["userEffects", "userEffectsAdditive", "toggleEffects", "toggleUserEffects",
-   "critEffects"]
+  CHANCE_SLOTS
     .forEach(function (k) { (s[k] || []).forEach(function (e) { refs.push(e); }); });
 
   var rows = [];
@@ -3601,6 +3636,23 @@ function pipLines(host, s) {
     return;
   }
   var chg = s.pipChange, min = s.pipMin;
+  pipBaseLines(host, s, chg, min, pip);
+  /* A toggle or a channel that keeps spending (or building) the resource while
+     it runs. Relentless Maul (1879485430) reads, in game:
+
+       Requires at least 5 Wrath
+       Removes 5 Wrath points every 1 second
+
+     so a minimum on such a skill is a gate, not a one-off "Cost:" - the spend
+     is the per-second line. 16 skills carry Skill_Toggle_PipChangePerInterval. */
+  var per = s.togglePipChange;
+  if (per && s.togglePipSeconds) {
+    tipLine(host, null, W(per < 0 ? "pipDrainEvery" : "pipGainEvery",
+                          Math.abs(per), pip, fmt(s.togglePipSeconds)), "pip");
+  }
+}
+
+function pipBaseLines(host, s, chg, min, pip) {
   if (chg > 0) {
     // Requiring the resource AND paying you more of it is not a contradiction:
     // Agile Rejoinder wants 3 Focus on the bar before it will fire and then
@@ -3619,7 +3671,11 @@ function pipLines(host, s) {
   // A minimum with no change of its own is still a cost - Hamstring gates on
   // 1 Fervour and takes it.
   if (!chg) {
-    if (min) tipW(host, "cost", "pip", min, pip);
+    if (min && s.togglePipChange) {
+      tipLine(host, null, W("requiresAtLeast", min, pip), "pip");
+    } else if (min) {
+      tipW(host, "cost", "pip", min, pip);
+    }
     return;
   }
   var spend = Math.abs(chg);
@@ -4375,7 +4431,11 @@ function chanceSource(e) {
       return fmt(v * 100, 1) + "%";
     });
     var uniq = pct.filter(function (x, i) { return pct.indexOf(x) === i; });
-    box.appendChild(el("span", null, "  gives " + uniq.join(" / ")));
+    // A chance that only exists because something modifies the property up
+    // from nothing is not a flat chance - probabilityWhen carries the same
+    // "when traited" wording the effect's own description uses.
+    box.appendChild(el("span", null, "  gives " + uniq.join(" / ")
+      + (e.probabilityWhen ? " " + e.probabilityWhen : "")));
   } else {
     box.appendChild(el("span", "muted", "  value not in this dataset"));
   }
@@ -4862,7 +4922,12 @@ function payloadBody(host, ne, progs, level, held, noDuration, st, depth) {
     });
     carrier.pre.forEach(function (t) { host.appendChild(el("div", "tipstat", t)); });
     if (inner.children.length) {
-      host.appendChild(el("div", "tipeffwho", carrier.header));
+      // The heading takes the colour of the carrier it introduces, not of the
+      // block it sits in: Relentless Maul's pulse is a friendly applier whose
+      // "Effects applied to enemies within 5 metres:" is still aimed at enemies
+      // and reads in the harm red.
+      host.appendChild(el("div", "tipeffwho" + (ne.harmful ? " harm" : ""),
+                          carrier.header));
       while (inner.firstChild) host.appendChild(inner.firstChild);
     }
     return host.children.length - before;
@@ -5120,6 +5185,18 @@ function effectBody(blk, e, ref, progs, level, held, noDuration) {
   }
   var lines = ccLines(e);
   var saidSpan = false;
+  /* "+100 Wrath" - a pip effect's own amount, in the client's signed form.
+     Bracing Roar (1879317043) heals and then hands back 100 Wrath through an
+     effect with no description, so the second line was missing. A two-ended
+     resource (Attunement, Balance) is left to its own sentence: its amount
+     means nothing without the end it points at. */
+  var pa = e.pipAdjust;
+  var pdef = pa && PIPS && PIPS[pa.type];
+  if (pa && !(pdef && pdef.icons)) {
+    var pname = (pdef && pdef.name) || spaceWords(enumWord("pipType", pa.type));
+    lines.push(el("div", "tipstat",
+      W(pa.amount < 0 ? "minusAmount" : "plusAmount", Math.abs(pa.amount), pname)));
+  }
   var bub = bubbleLine(e, progs, level);
   if (bub) lines.push(el("div", "tipstat", bub));
   reactiveLines(e, progs, level).forEach(function (n) { lines.push(n); });
@@ -5457,11 +5534,22 @@ function expandSelector(d) {
   return d.replace(/[ \t]{2,}/g, " ").trim();
 }
 
+/* A wording that names a unit right after its placeholder is counting, not
+   measuring - and "up to 500% times" is not a sentence the client would ever
+   print. The percentage flag belongs to the PROPERTY, and a property can carry
+   it by mistake: Corsair_CritBuff_Damage_Potency_String is the max tier of the
+   Mariner's Test Defences, a count of 3, 4 or 5, and its metadata is a
+   byte-for-byte copy of a damage potency property's, DisplayAsPercentage and
+   all. Where the two disagree the wording is the better witness, because it is
+   the sentence a reader actually gets. */
+var COUNT_UNIT = /\*\s*(?:times|stacks|seconds|secs)\b/i;
+
 function statWording(st, meta) {
   var d = st.description;
   if (!d) return null;
   d = expandSelector(d);
   if (d.indexOf("*") === -1) return d;
+  if (meta && meta.p && COUNT_UNIT.test(d)) meta = { c: meta.c, n: meta.n };
   // Only a number goes in the slot. A Set of true (Death_ImmuneToDefeat,
   // "x * Outgoing Damage") printed "x1 Outgoing Damage".
   if (typeof st.value !== "number") return null;
@@ -5938,6 +6026,264 @@ function classRun(codes, D) {
   return run.childNodes.length ? run : null;
 }
 
+/* ---------------- item tooltips ---------------- */
+
+/* An item's panel, in the tooltip look the skill and effect panels use. Every
+   label and sentence frame is the client's own, from the same StringTable
+   (0x250001AF): "Bind On Equip", "_ Armour", "_ DPS", "Minimum Level: _",
+   "Class: _", "Item Level: _", "On Use:", "Durability _/_", "Worth:".
+
+   What the DAT does NOT say is the order and the colour of the lines - that is
+   in the client's code - so the layout below is the usual LOTRO item panel,
+   top to bottom:
+
+       Name                          (quality colour)
+       Bind On Equip / Unique
+       Medium Armour           Chest
+       677 Armour
+       200.5 DPS                     (the table's own #EEEE99)
+       172 - 286 Common Damage
+       +35 Agility ...               (the item's own Mod_Array)
+       Socket Type: Basic Essence
+       On Equip: / On Use:           (the effects, worded as on a skill)
+       Durability 100/100
+       Minimum Level: 95
+       Class: Hunter
+       Item Level: 95
+       description
+       Cooldown: 30s / Consumed On Use / Worth: ...
+
+   Unique, durability points, Consumed On Use and Worth are only drawn once
+   the extractor has saved the properties they come from - see
+   item-props in lotrodb/extract.py. */
+
+/* A curve read at an ITEM level. progAt caps its index at the level cap, which
+   is right for a character level and wrong here: modern gear runs to item
+   level 500 and beyond, and capping read every piece above 160 as if it were
+   160. */
+function itemProgAt(progs, id, index) {
+  var pr = progs && progs[String(id)];
+  if (!pr) return null;
+  if (pr.type === "linear") {
+    var pts = (pr.points || []).filter(function (q) {
+      return typeof q[0] === "number" && typeof q[1] === "number";
+    });
+    if (!pts.length) return null;
+    if (index <= pts[0][0]) return pts[0][1];
+    for (var i = 1; i < pts.length; i++) {
+      if (index <= pts[i][0]) {
+        var a = pts[i - 1], b = pts[i];
+        return a[1] + (b[1] - a[1]) * ((index - a[0]) / ((b[0] - a[0]) || 1));
+      }
+    }
+    return pts[pts.length - 1][1];
+  }
+  if (pr.type === "nested") return progAt(progs, id, index);
+  var vals = pr.values || [];
+  var min = pr.minIndex === undefined ? 1 : pr.minIndex;
+  return vals.length ? vals[Math.max(0, Math.min(vals.length - 1, index - min))] : null;
+}
+
+/* The item's own modifiers at its item level. A Mod_Array often carries the
+   same property twice for two level bands (10-50 and 51-1000 on the old
+   Dextrous jackets); only the band holding the item level applies. Ratings
+   print as whole numbers, the way the client shows them. */
+function itemStatLines(it, progs) {
+  var ilvl = it.itemLevel || 1;
+  var out = [];
+  (it.stats || []).forEach(function (st) {
+    if (st.minLevel !== undefined && ilvl < st.minLevel) return;
+    if (st.maxLevel !== undefined && ilvl > st.maxLevel) return;
+    var r = st;
+    if (st.value === undefined && st.progression) {
+      var v = itemProgAt(progs, st.progression, ilvl);
+      if (v === null || v === undefined) return;
+      var meta = PROPS && PROPS[st.stat];
+      r = {};
+      for (var k in st) r[k] = st[k];
+      r.value = (meta && meta.p) ? v : Math.round(v);
+    }
+    var line = statLine(r, "level");
+    if (line) out.push(line);
+  });
+  return out;
+}
+
+/* The slot as a word. The DAT's Item_EquipmentCategory tokens have no display
+   labels ("MediumArmor", "2HSword"), so these few are spelled out here. */
+var ITEM_SLOT_WORDS = {
+  LightArmor: "Light Armour", MediumArmor: "Medium Armour",
+  HeavyArmor: "Heavy Armour", HeavyShield: "Heavy Shield",
+  MediumShield: "Warden's Shield", CraftTool: "Crafting Tool",
+  BattleGauntlets: "Battle-gauntlets"
+};
+var ITEM_BODY_SLOTS = { Head: "Head", Shoulders: "Shoulders", Chest: "Chest",
+  Hands: "Hands", Legs: "Legs", Feet: "Feet", Back: "Back" };
+
+function itemSlotWord(slot) {
+  if (ITEM_SLOT_WORDS[slot]) return ITEM_SLOT_WORDS[slot];
+  var m = /^([12])H(.*)$/.exec(slot);
+  if (m) return (m[1] === "1" ? "One-handed " : "Two-handed ") + spaceWords(m[2]);
+  return spaceWords(slot);
+}
+
+/* Coins as the client counts them: 100 copper to a silver, 1,000 silver to a
+   gold. */
+function itemWorth(copper) {
+  var g = Math.floor(copper / 100000), sv = Math.floor(copper / 100) % 1000,
+      c = copper % 100, bits = [];
+  if (g) bits.push(num(g) + " gold");
+  if (sv) bits.push(sv + " silver");
+  if (c || !bits.length) bits.push(c + " copper");
+  return bits.join(" ");
+}
+
+/* Every effect an item's panel quotes, fetched before it is drawn - the same
+   descent a skill panel uses, so an over-time food buff shows its pulses. */
+function preloadItemTip(it) {
+  var ids = [].concat(it.onUse || [], it.whileEquipped || []);
+  return preloadTipEffects({ userEffects: ids.map(function (id) { return { id: id }; }) });
+}
+
+function itemTooltip(it, progs, D) {
+  var box = el("div", "tip item");
+  var head = el("div", "tiphead");
+  var img = el("img");
+  img.src = iconUrl(it.icon);
+  img.alt = "";
+  img.onerror = function () { this.style.visibility = "hidden"; };
+  head.appendChild(img);
+  var q = String(it.quality || "Common").toLowerCase();
+  head.appendChild(el("div", "tipname rar-" + q, it.name));
+  box.appendChild(head);
+
+  /* The top block, in the order the client prints it (read off in-game
+     panels): how it binds, then the item level, then what it IS - the slot
+     word for gear, the armour or the weapon's damage - and "Consumed On Use"
+     under that in its own grey. */
+  var top = el("div", "tipbody");
+  if (it.bind) {
+    var onEquip = it.bind === "on equip";
+    tipLine(top, null, W(it.bindAccount ? (onEquip ? "bindAccountEquip" : "bindAccountAcquire")
+                                        : (onEquip ? "bindOnEquip" : "bindOnAcquire")));
+  } else if (it.bindAccount) {
+    tipLine(top, null, W("bindAccountAcquire"));
+  }
+  if (it.unique) tipLine(top, null, W("unique"));
+  if (it.itemLevel) tipW(top, "itemLevel", null, it.itemLevel);
+
+  // "Class" is the class-item slot (a Lore-master's book, a Captain's
+  // standard); the word alone says nothing, so that row is left off.
+  var slot = (it.slots || [])[0];
+  if (slot && slot !== "Class") {
+    var row0 = el("div", "tl tiprow0");
+    row0.appendChild(el("span", "tv", itemSlotWord(slot)));
+    if (ITEM_BODY_SLOTS[it.category]) {
+      row0.appendChild(el("span", "tv tipright", ITEM_BODY_SLOTS[it.category]));
+    }
+    top.appendChild(row0);
+  }
+  if (it.armour) tipLine(top, null, W("armourAmount", num(it.armour)));
+  if (it.dps) tipLine(top, null, W("dpsLine", fmt(it.dps, 1)), "idps");
+  if (it.damage) {
+    var v = it.damageVariance || 0;
+    var dtype = it.damageType ? spaceWords(enumWord("damageType", it.damageType)) : "";
+    tipLine(top, null, v
+      ? W("damageRange", numAmt(it.damage * (1 - v)), numAmt(it.damage * (1 + v)), dtype)
+      : W("damageOne", numAmt(it.damage), dtype));
+  }
+  if (it.consumed) tipLine(top, null, W("consumedOnUse"), "idim");
+  if (top.children.length) box.appendChild(top);
+
+  // What it gives you, in the effect green the client uses for an item's own
+  // modifiers.
+  var stats = itemStatLines(it, progs);
+  if (stats.length) {
+    var sb = el("div", "tipbody istats");
+    stats.forEach(function (n) { sb.appendChild(n); });
+    box.appendChild(sb);
+  }
+
+  if (it.sockets && it.sockets.length) {
+    var so = el("div", "tipbody");
+    it.sockets.forEach(function (label) { tipLine(so, null, label, "isocket"); });
+    box.appendChild(so);
+  }
+
+  // What wearing or using it does, worded exactly as a skill panel words the
+  // same effect.
+  var level = preferredLevel(LEVEL_CAP);
+  [["whileEquipped", "onEquip"], ["onUse", "onUse"]].forEach(function (pair) {
+    var ids = it[pair[0]];
+    if (!ids || !ids.length) return;
+    var blk = el("div", "tipeff");
+    var any = false;
+    ids.forEach(function (id) {
+      var e = EFFECT_CACHE[String(id)];
+      if (e && effectBody(blk, e, null, progs, level)) any = true;
+    });
+    if (!any) return;
+    blk.insertBefore(el("div", "tipeffwho", W(pair[1])), blk.firstChild);
+    box.appendChild(blk);
+  });
+
+  /* The requirement block: durability with its wear word pushed to the right
+     edge of the same row, then the levels and who may use it. */
+  var req = el("div", "tipbody");
+  if (it.structure) {
+    var dur = el("div", "tl tiprow0");
+    dur.appendChild(el("span", "tv",
+      W("durability", num(it.structure), num(it.structure))));
+    if (it.durability) {
+      dur.appendChild(el("span", "tv tipright",
+        spaceWords(enumWord("durability", it.durability))));
+    }
+    req.appendChild(dur);
+  }
+  if (it.maxLevel) tipLine(req, null, W("maximumLevel", it.maxLevel));
+  if (it.gloryRank) tipLine(req, null, W("requiresGloryRank", it.gloryRank));
+  if (it.minLevel) tipW(req, "minimumLevel", null, it.minLevel);
+  if (it.requiresClass && it.requiresClass.length) {
+    var names = it.requiresClass.map(function (code) {
+      var c = classByCode(code, D);
+      return c ? c.name : spaceWords(code);
+    });
+    tipW(req, "classColon", null, names.join(", "));
+  }
+  // An item only a creep may use. The client prints this red because the
+  // reader cannot meet it; here nobody's character is known, so it reads as
+  // the requirement it is.
+  if (it.monsterPlay) tipLine(req, null, W("requiresColon", "Monster Play"));
+  if (req.children.length) box.appendChild(req);
+
+  // The author's own sentence, in quotes as the client shows it.
+  if (it.desc) {
+    var d = multiLine("tipdesc", '"' + String(it.desc).replace(/\s+$/, "") + '"');
+    if (d) box.appendChild(d);
+  }
+
+  if (it.disenchant) {
+    var dz = el("div", "tipbody");
+    tipLine(dz, null, W("disenchantsInto"), "idim");
+    // The component is an item like any other, and its name lives in the item
+    // index - 5MB that a record page deliberately does not wait for. So the
+    // row is drawn with whatever is in hand and filled in by nameLatecomers
+    // when the index lands, the same way every other item link on the site is.
+    var meta = nameOf(it.disenchant);
+    var dl = el("span", "tv", meta ? meta.n : "item " + it.disenchant);
+    if (!meta) dl.setAttribute("data-nameid", it.disenchant);
+    tipLine(dz, null, dl);
+    loadItemIndex().then(nameLatecomers, function () { /* no index, no name */ });
+    box.appendChild(dz);
+  }
+
+  var foot = el("div", "tipbody");
+  if (it.cooldown) tipW(foot, "cooldown", "time", it.cooldown);
+  if (it.worth) tipLine(foot, W("worth") || "Worth:", itemWorth(it.worth), "iworth");
+  if (foot.children.length) box.appendChild(foot);
+  return box;
+}
+
 /* An item page. Until the extractor learned the four equipment classes this
    was a name, an icon and a category - the whole gear half of the game was
    missing, which is also why a set could not link its own pieces. */
@@ -5972,6 +6318,10 @@ function renderItem(it, D, MS, progs) {
   host.appendChild(tags);
 
   if (it.desc) host.appendChild(richPara("desc", it.desc));
+
+  // The in-game panel first, as on a skill page. Its effects were fetched by
+  // the route before this ran.
+  section(host, "Tooltip", itemTooltip(it, progs || {}, D));
 
   // Damage is stored as an average and a spread: 33.96 at 0.25 is the client's
   // "25.5 - 42.5 Common Damage".
@@ -7159,9 +7509,12 @@ function route() {
         detail.appendChild(el("div", "empty", "No item with id " + iid + "."));
         return;
       }
-      detail.appendChild(renderItem(rec, res[1], res[3], res[4]));
-      detail.scrollTop = 0;
-      document.title = rec.name + " - LOTRO Skills and Effects";
+      return preloadItemTip(rec).then(function () {
+        detail.textContent = "";
+        detail.appendChild(renderItem(rec, res[1], res[3], res[4]));
+        detail.scrollTop = 0;
+        document.title = rec.name + " - LOTRO Skills and Effects";
+      });
     });
     runSearch();
     return;
@@ -7441,6 +7794,8 @@ document.addEventListener("click", function (ev) {
   var u;
   try { u = new URL(a.href); } catch (e) { return; }
   if (u.origin !== location.origin || u.pathname.indexOf(BASE) !== 0) return;
+  // a real file (privacy.html) is a separate page, not a route in the app
+  if (/\.html$/.test(u.pathname)) return;
   ev.preventDefault();
   navigate(u.pathname);
 });
@@ -7493,7 +7848,7 @@ function hoverRoute(a) {
   var u;
   try { u = new URL(a.href); } catch (e) { return null; }
   if (u.origin !== location.origin || u.pathname.indexOf(BASE) !== 0) return null;
-  var m = /^(skill|effect|trait)\/(\d+)$/.exec(u.pathname.slice(BASE.length));
+  var m = /^(skill|effect|trait|item)\/(\d+)$/.exec(u.pathname.slice(BASE.length));
   return m ? { kind: m[1], id: parseInt(m[2], 10) } : null;
 }
 
@@ -7550,6 +7905,11 @@ function hoverPanel(sub) {
     }
     return loadRecord(sub.kind, sub.id).then(function (rec) {
       if (!rec) return null;
+      if (sub.kind === "item") {
+        return preloadItemTip(rec).then(function () {
+          return itemTooltip(rec, progs, D);
+        });
+      }
       if (sub.kind === "effect") {
         return preloadEffectTip(rec).then(function () {
           return effectTooltip(rec, progs, D, preferredLevel(LEVEL_CAP));

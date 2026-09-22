@@ -77,6 +77,15 @@ DID + `0x09000000`.
 itself, so returning visitors get the new files rather than their cache. If you
 edit `app.js` or `style.css` by hand without rebuilding, bump it by hand.
 
+## Privacy
+
+The site sets no cookies, stores nothing in the browser, and makes no
+requests to third parties - the Cinzel font is served from `fonts/` rather
+than Google Fonts for that reason. `privacy.html` is the GDPR notice and is
+linked from the foot of the sidebar. If anything is ever added that collects
+data (analytics, embeds, a font or script from another host), update
+`privacy.html` first.
+
 ## Tooltips
 
 Skill and effect panels are worded from the client's own StringTables. Every
@@ -125,3 +134,5 @@ error - and it writes what changed since the last build into
                            effect or a skill
     data/raw/...           pruned raw client properties, loaded on demand
     icons/<iconId>.png     icons exported from the DATs
+    fonts/                 Cinzel (tooltip names), self-hosted, OFL licence
+    privacy.html           privacy notice (static page, not routed by app.js)

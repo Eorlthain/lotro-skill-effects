@@ -128,6 +128,12 @@ var WORDING = {
    "Area-effect target limit: "
   ]
  },
+ "armourAmount": {
+  "parts": [
+   "",
+   " Armour"
+  ]
+ },
  "armourStats": {
   "parts": [
    "Armour Stats:"
@@ -255,6 +261,12 @@ var WORDING = {
  "channelledSkill": {
   "parts": [
    "Channelled Skill"
+  ]
+ },
+ "classColon": {
+  "parts": [
+   "Class: ",
+   ""
   ]
  },
  "clearsAllGambits": {
@@ -387,6 +399,12 @@ var WORDING = {
    " ",
    " #1:{effect[1]|effects} ",
    " from the target."
+  ]
+ },
+ "dpsLine": {
+  "parts": [
+   "<rgb=#EEEE99>",
+   " DPS</rgb>"
   ]
  },
  "drainEveryFor": {
@@ -529,6 +547,12 @@ var WORDING = {
    ""
   ]
  },
+ "maximumLevel": {
+  "parts": [
+   "Maximum Level ",
+   ""
+  ]
+ },
  "minimumLevel": {
   "parts": [
    "Minimum Level: ",
@@ -561,6 +585,11 @@ var WORDING = {
  "onApplication": {
   "parts": [
    "On application:"
+  ]
+ },
+ "onEquip": {
+  "parts": [
+   "On Equip:"
   ]
  },
  "onExpiration": {
@@ -606,6 +635,22 @@ var WORDING = {
    "",
    "% of your ",
    ""
+  ]
+ },
+ "pipDrainEvery": {
+  "parts": [
+   "Removes #1:",
+   " #2:",
+   " #1:{points|point[1]} every #3:",
+   " #3:{seconds|second[1]}"
+  ]
+ },
+ "pipGainEvery": {
+  "parts": [
+   "Adds #1:",
+   " #2:",
+   " #1:{points|point[1]} every #3:",
+   " #3:{seconds|second[1]}"
   ]
  },
  "plusAmount": {
@@ -692,6 +737,12 @@ var WORDING = {
  "requiresGambit": {
   "parts": [
    "Requires an active gambit"
+  ]
+ },
+ "requiresGloryRank": {
+  "parts": [
+   "Requires: Glory Rank ",
+   ""
   ]
  },
  "resistance": {
@@ -839,6 +890,11 @@ var WORDING = {
    "Toggle Skill"
   ]
  },
+ "unique": {
+  "parts": [
+   "Unique"
+  ]
+ },
  "userEffects": {
   "parts": [
    "User Effects:"
@@ -858,6 +914,11 @@ var WORDING = {
  "whenInPosition": {
   "parts": [
    "When in Position:"
+  ]
+ },
+ "worth": {
+  "parts": [
+   "Worth: "
   ]
  }
 };
