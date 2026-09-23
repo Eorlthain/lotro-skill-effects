@@ -204,9 +204,13 @@ var EFFECT_CACHE = {};
 function preloadTipEffects(s) {
   var ids = {};
   (s.attacks || []).forEach(function (a) {
-    ["targetEffects", "positionalEffects", "superCritEffects"].forEach(function (k) {
-      (a[k] || []).forEach(function (e) { ids[e.id] = 1; });
-    });
+    // HOOK_SLOTS itself is declared further down; this list has to hold the
+    // same four names, because an effect missing from the cache is an effect
+    // the panel cannot draw.
+    ["targetEffects", "positionalEffects", "critEffects", "superCritEffects"]
+      .forEach(function (k) {
+        (a[k] || []).forEach(function (e) { ids[e.id] = 1; });
+      });
   });
   ["userEffects", "userEffectsAdditive", "toggleEffects", "toggleUserEffects",
    "critEffects"]
@@ -3189,7 +3193,8 @@ function enablesBlock(rec) {
 /* The slots chanceBlock draws from, named once so the lists above and the
    table below cannot drift apart - a slot dropped from one and not the other
    would either lose a row or print it twice. */
-var HOOK_SLOTS = ["targetEffects", "positionalEffects", "superCritEffects"];
+var HOOK_SLOTS = ["targetEffects", "positionalEffects", "critEffects",
+                  "superCritEffects"];
 var CHANCE_SLOTS = ["userEffects", "userEffectsAdditive", "toggleEffects",
                     "toggleUserEffects", "critEffects"];
 
@@ -3884,6 +3889,17 @@ if (row0.children.length) top.appendChild(row0);
 
   effectBlocks(s, progs, level).forEach(function (blk) { box.appendChild(blk); });
 
+  // The positional list belongs with the effect rows, above the cost - it is
+  // still something the skill puts on the target, just not from every angle.
+  // The critical lists sit below the cost instead, which is where the client
+  // puts them; both are built the same way but they are not one section.
+  var pos = [];
+  (s.attacks || []).forEach(function (a) {
+    (a.positionalEffects || []).forEach(function (e) { pos.push(e); });
+  });
+  var posBlk = gatedGroup(pos, positionalHeading(s), progs, level);
+  if (posBlk) box.appendChild(posBlk);
+
   var foot = el("div", "tipbody cost");
   // The client's cost line is "Cost: <amount> <vital>", so the two halves are
   // kept apart and handed to the template rather than glued together here.
@@ -3942,6 +3958,8 @@ if (row0.children.length) top.appendChild(row0);
   } else if (s.clearsGambits) {
     tipLine(foot, null, W("clearsAllGambits"));
   }
+  // Under the cost, above the cooldown - the client's own placement.
+  critGroups(s, progs, level).forEach(function (blk) { foot.appendChild(blk); });
   if (s.cooldown !== undefined) {
     tipW(foot, "cooldown", "time cdgap", secs(s.cooldown));
   }
@@ -5250,6 +5268,58 @@ function effectBody(blk, e, ref, progs, level, held, noDuration) {
     blk.appendChild(n.tagName === "A" ? n : tipEffLink(n, e.id));
   });
   return blk.children.length - before;
+}
+
+/* Three of a hook's effect lists are not the plain target list and must not be
+   printed as if they were: the positional list fires only from inside the arc,
+   the critical and super-critical lists only on a crit. The client gives each
+   its own heading, in the duration green every carrier heading takes, and
+   prints the lines under it in magenta rather than the red or green a landed
+   effect gets - the colour IS the condition. Without that, Stagger's snare read
+   as something every Stagger applies, and Cunning Attack's Major Cunning Bleed
+   - the entire reason to crit with it - was on no page at all. */
+function gatedGroup(refs, heading, progs, level) {
+  if (!refs || !refs.length) return null;
+  var inner = effectBlocks({ userEffects: refs }, progs, level);
+  if (!inner.length) return null;
+  var wrap = el("div", "tipeff gated");
+  wrap.appendChild(el("div", "tipeffwho", heading));
+  inner.forEach(function (b) { wrap.appendChild(b); });
+  return wrap;
+}
+
+/* Which of the client's two positional headings this skill's arc earns. The
+   same 135-225 test positionalBlock uses on the page, so the panel and the
+   section below it cannot disagree about where you have to stand. */
+function positionalHeading(s) {
+  var h = s.positionalHeading || 0;
+  return (h > 135 && h < 225) ? W("whenBehind") : W("whenInPosition");
+}
+
+/* An effect in BOTH the critical and super-critical lists is one the client
+   words as covering the pair; in one alone it names that one. Returns the
+   groups in the order the client prints them. */
+function critGroups(s, progs, level) {
+  var crit = [], sup = [], both = [], seen = {};
+  (s.attacks || []).forEach(function (a) {
+    (a.critEffects || []).forEach(function (e) { seen[e.id] = 1; });
+  });
+  (s.attacks || []).forEach(function (a) {
+    (a.superCritEffects || []).forEach(function (e) {
+      (seen[e.id] ? both : sup).push(e);
+    });
+  });
+  var inBoth = {};
+  both.forEach(function (e) { inBoth[e.id] = 1; });
+  (s.attacks || []).forEach(function (a) {
+    (a.critEffects || []).forEach(function (e) {
+      if (!inBoth[e.id]) crit.push(e);
+    });
+  });
+  return [gatedGroup(both, W("applyOnCritOrDev"), progs, level),
+          gatedGroup(crit, W("applyOnCrit"), progs, level),
+          gatedGroup(sup, W("applyOnDevCrit"), progs, level)]
+    .filter(Boolean);
 }
 
 function effectBlocks(s, progs, level) {

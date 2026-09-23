@@ -1862,3 +1862,42 @@ body.legalpage {
 .tip.item .tl.time .tv {
   color: var(--tip-time);
 }
+
+/* ---------- conditional hook effects ----------
+   A positional, critical or devastating-critical effect does not land on an
+   ordinary hit, and the client says so in colour rather than in words: the
+   heading keeps the duration green every carrier heading takes, and the lines
+   under it go magenta instead of the red a debuff or the green a buff would
+   get. Stagger's snare printed in debuff red read as something every Stagger
+   applies. Written to outrun .tipeff.harm/.heal (0,3,0) and the cost group's
+   own colour, because the block sits inside both. */
+.tip .tipeff.gated .tipstat,
+.tip .tipeff.gated .tipeffdesc,
+.tip .tipeff.gated .tl,
+.tip .tipeff.gated .tipefflink {
+  color: var(--tt-earned);
+}
+
+.tip .tipeff.gated .tipstat .tv,
+.tip .tipeff.gated .tl .tv,
+.tip .tipeff.gated .tl .tk {
+  color: var(--tt-earned);
+}
+
+/* The duration under a conditional line takes the pip yellow, not the duration
+   green - the green is spoken for by the heading directly above it, and two
+   greens in a row read as one block rather than a heading over its content. */
+.tip .tipeff.gated .tipdur,
+.tip .tipeff.gated .tipdur .tv {
+  color: var(--tip-pip);
+}
+
+/* The heading itself: green, and never inheriting the harm red from a debuff
+   nested under it. */
+.tip .tipeff.gated > .tipeffwho {
+  color: var(--tip-time);
+}
+
+.tip .tipbody.cost .tipeff.gated {
+  margin-top: 6px;
+}
