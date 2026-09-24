@@ -1,0 +1,146 @@
+{
+ "coins": {
+  "copper": {
+   "icon": 1090551421,
+   "name": "Copper",
+   "plural": "copper coins",
+   "singular": "copper coin",
+   "value": 1
+  },
+  "gold": {
+   "icon": 1090551419,
+   "name": "Gold",
+   "plural": "gold coins",
+   "singular": "gold coin",
+   "value": 100000
+  },
+  "silver": {
+   "icon": 1090551420,
+   "name": "Silver",
+   "plural": "silver pieces",
+   "singular": "silver piece",
+   "value": 100
+  }
+ },
+ "sockets": {
+  "Classic": {
+   "background": 1092638747,
+   "label": "Basic Essence",
+   "overlay": 1091478178
+  },
+  "Cloak_Essence": {
+   "background": 1092753853,
+   "label": "Cloak Essence",
+   "overlay": 1091478101
+  },
+  "Essence_Mainstat": {
+   "background": 1092638747,
+   "label": "Primary Essence",
+   "overlay": 1091478101
+  },
+  "Essence_Vital": {
+   "background": 1092638747,
+   "label": "Vital Essence",
+   "overlay": 1091478176
+  },
+  "Legacy_Class_Beorning": {
+   "background": 1092686399,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Brawler": {
+   "background": 1092686398,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Burglar": {
+   "background": 1092686400,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Captain": {
+   "background": 1092686396,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Champion": {
+   "background": 1092686404,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Corsair": {
+   "background": 1092811669,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Guardian": {
+   "background": 1092686406,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Hunter": {
+   "background": 1092686407,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Loremaster": {
+   "background": 1092686395,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Minstrel": {
+   "background": 1092686403,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Runekeeper": {
+   "background": 1092686405,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Class_Warden": {
+   "background": 1092686401,
+   "label": "Word of Mastery",
+   "overlay": 1092695902
+  },
+  "Legacy_Craft": {
+   "background": 1092696757,
+   "label": "Word of Craft",
+   "overlay": 1092686394
+  },
+  "Legacy_Heraldry": {
+   "background": 1092696757,
+   "label": "Heraldic Tracery",
+   "overlay": 1092686402
+  },
+  "Legacy_Levelup": {
+   "background": 1092696757,
+   "overlay": 1092695902
+  },
+  "Legacy_Power": {
+   "background": 1092696757,
+   "label": "Word of Power",
+   "overlay": 1092686397
+  },
+  "Necklace_Essence": {
+   "background": 1092753854,
+   "label": "Necklace Essence",
+   "overlay": 1091478101
+  },
+  "PvP_Essence": {
+   "background": 1092687414,
+   "label": "Essence of War",
+   "overlay": 1091478178
+  },
+  "PvP_Necklace_Essence": {
+   "background": 1092753854,
+   "label": "Necklace Essence of War",
+   "overlay": 1091478102
+  },
+  "Triangle": {
+   "background": 1092638743,
+   "label": "Triangle",
+   "overlay": 1092695902
+  }
+ }
+}

@@ -468,7 +468,7 @@ var WORDING = {
  },
  "fastWith": {
   "parts": [
-   "Fast\n",
+   "Fast\\n",
    ""
   ]
  },
@@ -500,7 +500,7 @@ var WORDING = {
  },
  "immediateWith": {
   "parts": [
-   "Immediate\n",
+   "Immediate\\n",
    ""
   ]
  },
@@ -805,6 +805,12 @@ var WORDING = {
  "selfOnCrit": {
   "parts": [
    "Applied to self on critical:"
+  ]
+ },
+ "setItemsEquipped": {
+  "parts": [
+   "",
+   " Different Set Items Equipped:"
   ]
  },
  "skillType": {

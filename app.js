@@ -165,6 +165,17 @@ function propertyData() { return sideFile("properties"); }
 function worldStateData() { return sideFile("worldStates"); }
 var WORLD_STATES = null;
 function displayTypeData() { return sideFile("displayTypes"); }
+/* The coin and essence-slot pictures. They live on named UI resources rather
+   than on any item, so extract.py fetches them by DID (see write_ui_icons)
+   and this is the only place the site needs to know they exist. */
+function uiIconData() { return sideFile("uiIcons").catch(function () { return {}; }); }
+var UICONS = null;
+/* Name and icon for the 45 things an item can disenchant into. A table of its
+   own because 26,345 items point at those 45, and the panel used to reach for
+   the 5MB item index to name one - which is why the row drew blank and filled
+   itself in afterwards. */
+function disenchantData() { return sideFile("disenchant").catch(function () { return {}; }); }
+var DISENCHANT = null;
 
 /* An enum value arrives as its internal token name - "Fervor", "Magic" - and
    the client prints something else: the log string on the enum's own mapper,
@@ -858,11 +869,21 @@ function runSearch() {
   function drawRow(r) {
     var row = el("a", "row" + (selected === r.t + r.i ? " sel" : ""));
     row.href = urlFor(routeFor(r.t) + "/" + r.i);
-    var img = el("img");
-    img.src = iconUrl(r.k);
-    img.loading = "lazy";
-    img.alt = "";
-    img.onerror = function () { this.style.visibility = "hidden"; };
+    // An item draws its whole stack, so a result row shows the quality frame
+    // its page does. Everything else has one picture and takes this path with
+    // a single layer. Lazy, because a search draws 300 of these.
+    // Only a row that HAS layers takes the stack. A skill, effect or trait has
+    // one picture and no frame of its own, and drawing it through the stack
+    // took away the grey plate and the rounding `.row img` gives it.
+    var kl = r.kl;
+    var img = kl && iconStack([kl[0], kl[1], kl[2], r.k, kl[3]], true);
+    if (!img) {
+      img = el("img");
+      img.src = iconUrl(r.k);
+      img.loading = "lazy";
+      img.alt = "";
+      img.onerror = function () { this.style.visibility = "hidden"; };
+    }
     var txt = el("div", "txt");
     txt.appendChild(el("div", "nm", r.n));
     var kindWord = r.t === "s" ? "Skill" : r.t === "e" ? "Effect"
@@ -3579,6 +3600,33 @@ function resistWording(rec, level, withLevel) {
   return W("resistanceWith", named, at);
 }
 
+/* The low end of a weapon's damage range.
+
+   Combat_Damage is the MAXIMUM, not the midpoint, and the range runs from
+   Combat_Damage * (1 - Combat_DamageVariance) up to it. This was read as a
+   midpoint, which put the top of every weapon's range 25% too high - the Kinta
+   Crossbow said "786 - 1,310" where the game says "786 - 1,048".
+
+   The item's own DPS is what settles it. Combat_BaseDPS / Combat_Damage is
+   0.875 on all 23,204 weapons in the data - daggers, two-handers, bows and
+   orbs alike - which is exactly the midpoint of [damage*0.75, damage]. Under
+   the midpoint reading the ratio would be one over the weapon's speed, and
+   speed varies by implement, so it could not be a single constant. The old
+   reading also contradicted the panel it was printed on: a "786 - 1,310" range
+   has a midpoint of 1,048 sitting under a DPS line reading 916.9. */
+function damageLow(it) {
+  return it.damage * (1 - (it.damageVariance || 0));
+}
+
+/* ui.json's `lines` were tried here as a source of per-row colour and are
+   deliberately NOT used. Its `tagColor` is UICore_Text_tag_font_colors - the
+   colour for tag markup embedded inside a row's text - not the colour of the
+   "Item Level:" half of the row, which is why it reads #CC9933 on ten of its
+   eleven rows whatever the row says. Painting labels gold from it turned the
+   item panel into something the game never shows. The row colour it does
+   carry (#E5E5E5 for the item level, durability and socket rows) is white in
+   all but name, so the CSS keeps these. */
+
 function tipLine(host, label, value, cls) {
   if (value === null || value === undefined || value === "") return;
   var d = el("div", "tl" + (cls ? " " + cls : ""));
@@ -5573,8 +5621,18 @@ function statAmount(st, meta, signed) {
   }
   if (st.op === "Subtract") n = -Math.abs(n);
   var shown = signed ? n : Math.abs(n);
-  // No thousands separator: the client writes "+7800 Tactical Mitigation".
+  /* Thousands separators follow the STAT, not the panel - see GROUPED_STATS.
+     The old note here said the client writes "+7800 Tactical Mitigation", and
+     it was right about that; it was wrong to read it as "panels never group",
+     because the same client writes "+3,144 Vitality" beside it. */
   var out = fmt(shown, 1).replace(/\.0$/, "");
+  // Only the leading integer run, never the decimals - numAmt would do, but it
+  // rounds, and a set bonus's "+1.5% Physical Mitigation" has to keep its half.
+  if (GROUPED_STATS[st.stat]) {
+    out = out.replace(/^(-?)(\d+)/, function (_, sign, digits) {
+      return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    });
+  }
   if (signed && shown > 0) out = "+" + out;
   return out + suffix;
 }
@@ -6158,6 +6216,18 @@ function itemProgAt(progs, id, index) {
    same property twice for two level bands (10-50 and 51-1000 on the old
    Dextrous jackets); only the band holding the item level applies. Ratings
    print as whole numbers, the way the client shows them. */
+/* Which stats carry thousands separators. Only the five main stats do: the
+   client writes "+3,144 Vitality" but "+4850 Block Rating", and every rating,
+   mitigation and defence runs its digits together. The armour line is not a
+   stat and is grouped where it is printed.
+
+   This is a property of the STAT, not of the panel it is on, which is why it
+   replaced a flag set around the item panel - that grouped a Critical Rating
+   as readily as a Vitality. */
+var GROUPED_STATS = {
+  Stat_Might: 1, Stat_Agility: 1, Stat_Will: 1, Stat_Fate: 1, Stat_Vitality: 1
+};
+
 function itemStatLines(it, progs) {
   var ilvl = it.itemLevel || 1;
   var out = [];
@@ -6199,30 +6269,173 @@ function itemSlotWord(slot) {
 
 /* Coins as the client counts them: 100 copper to a silver, 1,000 silver to a
    gold. */
+/* A small picture the client keeps in a named UI resource rather than on any
+   record - a coin, or an essence slot. Both come from data/uiIcons.json, and
+   both degrade to the word they replace when that file is not in hand. */
+function uiImg(did, alt, cls) {
+  var i = el("img", cls || null);
+  i.src = iconUrl(did);
+  i.alt = alt || "";
+  if (alt) i.title = alt;
+  i.onerror = function () { this.style.visibility = "hidden"; };
+  return i;
+}
+
+/* An essence slot is two layers, and it takes BOTH to say which slot it is.
+   The 24 types have only 18 distinct backgrounds and 8 distinct overlays
+   between them, but all 24 (background, overlay) pairs are different:
+
+     Basic / Primary / Vital Essence   one background, three overlays
+     the eleven class legacies         one overlay, eleven backgrounds
+
+   So neither layer can be dropped. Drawing the background alone collapses the
+   first three into one blank square; drawing the overlay alone makes every
+   "Word of Mastery" identical, which is already what the label does. */
+function socketIcon(token) {
+  var spec = UICONS && UICONS.sockets && UICONS.sockets[token];
+  if (!spec || !(spec.background || spec.overlay)) return null;
+  var box = el("span", "socketicon");
+  if (spec.background) box.appendChild(uiImg(spec.background, ""));
+  if (spec.overlay) box.appendChild(uiImg(spec.overlay, "", "overlay"));
+  return box;
+}
+
+/* "33 [silver] 6 [copper]" the way the client writes it. The denominations and
+   what each is worth in copper are the client's own - Currency_Value says
+   100000 / 100 / 1 - so the arithmetic is no longer a constant typed in here.
+   Without the table it falls back to the words it always printed. */
+var COIN_ORDER = ["gold", "silver", "copper"];
+
+/* An item's icon is a stack, not one picture. The client draws a background
+   first - almost always the quality frame, which 151,383 of the 153,972 items
+   carry - then the underlay and the shadow, then the item itself, then an
+   overlay on the 15,422 that have one. Drawn as the bare image it was missing
+   the border the game puts around every icon in the game.
+
+   Bottom first, in the order the layer names give. Shadow and underlay are
+   kept apart rather than treated as one because they are different pictures
+   on 58,100 items. */
+/* The stack itself, given its pictures already in drawing order. Both callers
+   arrive with the same five layers in different shapes - an item record keeps
+   them in an object, a search row in four palette columns - so the ordering
+   lives in each caller and the drawing lives here.
+
+   23,324 items name the same picture as both shadow and underlay; drawing it
+   twice costs a second element and changes nothing. */
+function iconStack(dids, lazy) {
+  var box = el("span", "iconstack");
+  var drawn = {};
+  dids.forEach(function (did) {
+    if (!did || drawn[did]) return;
+    drawn[did] = 1;
+    var img = uiImg(did, "");
+    if (lazy) img.loading = "lazy";
+    box.appendChild(img);
+  });
+  return box.firstChild ? box : null;
+}
+
+function itemIcon(it) {
+  var L = it.iconLayers || {};
+  return iconStack([L.background, L.underlay, L.shadow, it.icon, L.overlay]);
+}
+
 function itemWorth(copper) {
-  var g = Math.floor(copper / 100000), sv = Math.floor(copper / 100) % 1000,
-      c = copper % 100, bits = [];
-  if (g) bits.push(num(g) + " gold");
-  if (sv) bits.push(sv + " silver");
-  if (c || !bits.length) bits.push(c + " copper");
-  return bits.join(" ");
+  var coins = (UICONS && UICONS.coins) || null;
+  var left = copper, out = el("span", "worthrun"), any = false;
+  COIN_ORDER.forEach(function (name) {
+    var spec = coins && coins[name];
+    var per = spec && spec.value ? spec.value
+            : (name === "gold" ? 100000 : name === "silver" ? 100 : 1);
+    var n = name === "copper" ? left : Math.floor(left / per);
+    left -= n * per;
+    // the client prints a lone "0 copper" for a worthless item, but never a
+    // leading zero on a denomination the item does not reach
+    if (!n && !(name === "copper" && !any)) return;
+    any = true;
+    var bit = el("span", "coin");
+    bit.appendChild(document.createTextNode(num(n)));
+    if (spec && spec.icon) bit.appendChild(uiImg(spec.icon, spec.name || name));
+    else bit.appendChild(document.createTextNode(" " + name));
+    out.appendChild(bit);
+  });
+  return out;
 }
 
 /* Every effect an item's panel quotes, fetched before it is drawn - the same
    descent a skill panel uses, so an over-time food buff shows its pulses. */
 function preloadItemTip(it) {
   var ids = [].concat(it.onUse || [], it.whileEquipped || []);
+  // A set bonus can grant an effect instead of a stat - 1,442 of the 4,476 do -
+  // and the panel words it from the effect itself, so those have to be in hand
+  // before it draws. SETS is already assigned by the time this runs.
+  var st = it.set && SETS && SETS[String(it.set)];
+  if (st) {
+    (st.bonuses || []).forEach(function (b) {
+      (b.effects || []).forEach(function (id) { ids.push(id); });
+    });
+  }
   return preloadTipEffects({ userEffects: ids.map(function (id) { return { id: id }; }) });
+}
+
+/* The set an item belongs to, as the client shows it on the item's own panel:
+   the set's name, the level it caps at, every piece by name, and then what
+   each piece count grants.
+
+   The piece being looked at is marked, because six near-identical armour names
+   are otherwise hard to place yourself in - the client does this by drawing the
+   ones you have equipped brighter, which is the same idea with the one fact a
+   page actually knows.
+
+   Piece names come from itemsets.json (see normalize.py). The set PAGE names
+   them through the item index, which is 9MB a tooltip must never wait on.
+
+   A bonus is stats, or effects, or both - 881 of the 4,476 are both - so
+   neither branch is an else. The stats go through itemStatLines so a
+   progression resolves at this item's level and the thousands group the way
+   the item's own stats do; the effects go through effectBlocks, which words
+   them exactly as any other effect on the panel. */
+function setBlock(it, progs) {
+  var st = it.set && SETS && SETS[String(it.set)];
+  if (!st) return null;
+  var box = el("div", "tipbody tipset");
+
+  var head = el("div", "tipsetname");
+  head.appendChild(document.createTextNode(st.name || ("set " + it.set)));
+  if (st.maxLevel) head.appendChild(el("span", "tipsetcap", "(Max Level: " + st.maxLevel + ")"));
+  box.appendChild(head);
+
+  (st.members || []).forEach(function (mid, i) {
+    var nm = (st.memberNames || [])[i];
+    box.appendChild(el("div", "tipsetpiece" + (mid === it.id ? " own" : ""),
+                       nm || ("item " + mid)));
+  });
+
+  // The SET's level, not the item's. A bonus belongs to the set, and the two
+  // differ: the Armour of the Dolo caps at 570 while its Hauberk is 569, and
+  // its Vitality progression is linear enough that the one level is the
+  // difference between +711 and +703. The game shows +711.
+  var lvl = st.level || it.itemLevel || 1;
+  (st.bonuses || []).forEach(function (b) {
+    if (b.pieces === undefined) return;
+    var lines = itemStatLines({ itemLevel: lvl, stats: b.stats }, progs);
+    var blocks = (b.effects || []).length
+      ? effectBlocks({ userEffects: b.effects.map(function (id) { return { id: id }; }) },
+                     progs, lvl)
+      : [];
+    if (!lines.length && !blocks.length) return;
+    box.appendChild(el("div", "tipeffwho tipsetcount",
+                       W("setItemsEquipped", b.pieces)));
+    lines.forEach(function (n) { n.className = "tipstat setstat"; box.appendChild(n); });
+    blocks.forEach(function (n) { box.appendChild(n); });
+  });
+  return box;
 }
 
 function itemTooltip(it, progs, D) {
   var box = el("div", "tip item");
   var head = el("div", "tiphead");
-  var img = el("img");
-  img.src = iconUrl(it.icon);
-  img.alt = "";
-  img.onerror = function () { this.style.visibility = "hidden"; };
-  head.appendChild(img);
+  head.appendChild(itemIcon(it) || el("span", "iconstack"));
   var q = String(it.quality || "Common").toLowerCase();
   head.appendChild(el("div", "tipname rar-" + q, it.name));
   box.appendChild(head);
@@ -6253,15 +6466,18 @@ function itemTooltip(it, progs, D) {
     }
     top.appendChild(row0);
   }
-  if (it.armour) tipLine(top, null, W("armourAmount", num(it.armour)));
-  if (it.dps) tipLine(top, null, W("dpsLine", fmt(it.dps, 1)), "idps");
+  // The armour value is not a fact like the item level - the client prints it
+  // in the same pale yellow it gives a skill's own description.
+  if (it.armour) tipLine(top, null, W("armourAmount", numAmt(it.armour)), "iarmour");
+  // Damage range first, DPS under it: the client's order, and the order that
+  // reads - the range is the weapon, the DPS is arithmetic on it.
   if (it.damage) {
-    var v = it.damageVariance || 0;
     var dtype = it.damageType ? spaceWords(enumWord("damageType", it.damageType)) : "";
-    tipLine(top, null, v
-      ? W("damageRange", numAmt(it.damage * (1 - v)), numAmt(it.damage * (1 + v)), dtype)
+    tipLine(top, null, it.damageVariance
+      ? W("damageRange", numAmt(damageLow(it)), numAmt(it.damage), dtype)
       : W("damageOne", numAmt(it.damage), dtype));
   }
+  if (it.dps) tipLine(top, null, W("dpsLine", fmt(it.dps, 1)), "idps");
   if (it.consumed) tipLine(top, null, W("consumedOnUse"), "idim");
   if (top.children.length) box.appendChild(top);
 
@@ -6276,7 +6492,14 @@ function itemTooltip(it, progs, D) {
 
   if (it.sockets && it.sockets.length) {
     var so = el("div", "tipbody");
-    it.sockets.forEach(function (label) { tipLine(so, null, label, "isocket"); });
+    it.sockets.forEach(function (label, i) {
+      var ico = socketIcon((it.socketTypes || [])[i]);
+      if (!ico) { tipLine(so, null, label, "isocket"); return; }
+      var row = el("div", "tl isocket");
+      row.appendChild(ico);
+      row.appendChild(el("span", "tv", label));
+      so.appendChild(row);
+    });
     box.appendChild(so);
   }
 
@@ -6301,6 +6524,8 @@ function itemTooltip(it, progs, D) {
      edge of the same row, then the levels and who may use it. */
   var req = el("div", "tipbody");
   if (it.structure) {
+    // Split into label and value so the client's gold label colour has
+    // something to land on; the wear word stays pushed to the right edge.
     var dur = el("div", "tl tiprow0");
     dur.appendChild(el("span", "tv",
       W("durability", num(it.structure), num(it.structure))));
@@ -6311,19 +6536,20 @@ function itemTooltip(it, progs, D) {
     req.appendChild(dur);
   }
   if (it.maxLevel) tipLine(req, null, W("maximumLevel", it.maxLevel));
-  if (it.gloryRank) tipLine(req, null, W("requiresGloryRank", it.gloryRank));
+  // A requirement you either meet or you do not reads red, the way the client
+  // prints it and the way every other database does. The level lines are NOT
+  // among them: the client leaves "Minimum Level" white, and so does Delver.
+  if (it.gloryRank) tipLine(req, null, W("requiresGloryRank", it.gloryRank), "ireq");
   if (it.minLevel) tipW(req, "minimumLevel", null, it.minLevel);
   if (it.requiresClass && it.requiresClass.length) {
     var names = it.requiresClass.map(function (code) {
       var c = classByCode(code, D);
       return c ? c.name : spaceWords(code);
     });
-    tipW(req, "classColon", null, names.join(", "));
+    tipW(req, "classColon", "ireq", names.join(", "));
   }
-  // An item only a creep may use. The client prints this red because the
-  // reader cannot meet it; here nobody's character is known, so it reads as
-  // the requirement it is.
-  if (it.monsterPlay) tipLine(req, null, W("requiresColon", "Monster Play"));
+  // An item only a creep may use - the same kind of gate, in the same red.
+  if (it.monsterPlay) tipLine(req, null, W("requiresColon", "Monster Play"), "ireq");
   if (req.children.length) box.appendChild(req);
 
   // The author's own sentence, in quotes as the client shows it.
@@ -6332,25 +6558,46 @@ function itemTooltip(it, progs, D) {
     if (d) box.appendChild(d);
   }
 
-  if (it.disenchant) {
-    var dz = el("div", "tipbody");
-    tipLine(dz, null, W("disenchantsInto"), "idim");
-    // The component is an item like any other, and its name lives in the item
-    // index - 5MB that a record page deliberately does not wait for. So the
-    // row is drawn with whatever is in hand and filled in by nameLatecomers
-    // when the index lands, the same way every other item link on the site is.
-    var meta = nameOf(it.disenchant);
-    var dl = el("span", "tv", meta ? meta.n : "item " + it.disenchant);
-    if (!meta) dl.setAttribute("data-nameid", it.disenchant);
-    tipLine(dz, null, dl);
-    loadItemIndex().then(nameLatecomers, function () { /* no index, no name */ });
-    box.appendChild(dz);
-  }
+  // The set, above the worth - where the client puts it.
+  var setb = setBlock(it, progs);
+  if (setb) box.appendChild(setb);
 
   var foot = el("div", "tipbody");
   if (it.cooldown) tipW(foot, "cooldown", "time", it.cooldown);
   if (it.worth) tipLine(foot, W("worth") || "Worth:", itemWorth(it.worth), "iworth");
   if (foot.children.length) box.appendChild(foot);
+
+  // Below the worth, which is where the game puts it - the disenchant block is
+  // what the item becomes rather than what it is, so it reads last.
+  if (it.disenchant) {
+    var dz = el("div", "tipbody");
+    tipLine(dz, null, W("disenchantsInto"), "idishead");
+    var spec = DISENCHANT && DISENCHANT[String(it.disenchant)];
+    var row = el("div", "tl idis");
+    var ico = spec && itemIcon(spec);
+    if (ico) row.appendChild(ico);
+    // Item_Disenchant_Value is the count, and it is only worth saying when
+    // there is more than one of them: "300 Embers of Enchantment", but just
+    // "Tracery Reclamation Scroll" rather than "1 Tracery Reclamation Scroll".
+    var qty = it.disenchantQty > 1 ? numAmt(it.disenchantQty) + " " : "";
+    if (spec && spec.name) {
+      // Named the way its own page names it - the tooltip title face, in its
+      // own quality colour - so the row reads as the thing you get rather
+      // than as another line of body text.
+      var q = String(spec.quality || "Common").toLowerCase();
+      row.appendChild(el("span", "tipname rar-" + q, qty + spec.name));
+    } else {
+      // No table in hand: fall back to the old route through the item index,
+      // which names it once that 5MB lands.
+      var meta = nameOf(it.disenchant);
+      var dl = el("span", "tv", qty + (meta ? meta.n : "item " + it.disenchant));
+      if (!meta) dl.setAttribute("data-nameid", it.disenchant);
+      row.appendChild(dl);
+      loadItemIndex().then(nameLatecomers, function () { /* no index, no name */ });
+    }
+    dz.appendChild(row);
+    box.appendChild(dz);
+  }
   return box;
 }
 
@@ -6360,11 +6607,7 @@ function itemTooltip(it, progs, D) {
 function renderItem(it, D, MS, progs) {
   var host = el("div");
   var head = el("div", "head");
-  var img = el("img");
-  img.src = iconUrl(it.icon);
-  img.alt = "";
-  img.onerror = function () { this.style.visibility = "hidden"; };
-  head.appendChild(img);
+  head.appendChild(itemIcon(it) || el("span", "iconstack"));
   var h = el("div");
   h.appendChild(el("h2", null, it.name));
   h.appendChild(el("div", "id", "item " + it.id + "  /  0x" +
@@ -6393,13 +6636,11 @@ function renderItem(it, D, MS, progs) {
   // the route before this ran.
   section(host, "Tooltip", itemTooltip(it, progs || {}, D));
 
-  // Damage is stored as an average and a spread: 33.96 at 0.25 is the client's
-  // "25.5 - 42.5 Common Damage".
   var dmg = null;
   if (it.damage) {
-    var v = it.damageVariance || 0;
-    dmg = v ? numAmt(it.damage * (1 - v)) + " - " + numAmt(it.damage * (1 + v))
-            : numAmt(it.damage);
+    dmg = it.damageVariance
+      ? numAmt(damageLow(it)) + " - " + numAmt(it.damage)
+      : numAmt(it.damage);
     if (it.damageType) dmg += " " + spaceWords(enumWord("damageType", it.damageType));
   }
   var bind = it.bind ? "Binds " + it.bind : (it.bindAccount ? "Bound to account" : null);
@@ -6409,7 +6650,7 @@ function renderItem(it, D, MS, progs) {
     ["Item level", it.itemLevel],
     ["Requires level", it.minLevel],
     ["Requires", classRun(it.requiresClass, D), "wide"],
-    ["Armour", it.armour ? num(it.armour) : null],
+    ["Armour", it.armour ? numAmt(it.armour) : null],
     ["DPS", it.dps ? fmt(it.dps, 2) : null],
     ["Damage", dmg],
     ["Speed", it.speed ? spaceWords(enumWord("speed", it.speed)) : null],
@@ -7568,11 +7809,14 @@ function route() {
     detail.textContent = "";
     detail.appendChild(el("div", "muted", "loading..."));
     Promise.all([loadRecord("item", iid), classData(), propertyData(),
-                 modSources(), progressions(), itemSetData(), sourceClasses()])
+                 modSources(), progressions(), itemSetData(), sourceClasses(),
+                 uiIconData(), disenchantData()])
       .then(function (res) {
       PROPS = res[2] || {};
       SETS = res[5] || {};
       SRC_CLASS = res[6] || {};
+      UICONS = res[7] || {};
+      DISENCHANT = res[8] || {};
       detail.textContent = "";
       var rec = res[0];
       if (!rec) {
@@ -7711,6 +7955,12 @@ function loadItemIndex() {
   return getJSON(dataUrl("data/itemIndex.json")).then(function (blob) {
     var cats = (blob && blob.c) || [];
     var rows = (blob && blob.r) || blob || [];
+    // The icon layers, shared through a palette: columns 4-7 are 1-based
+    // indexes into it, 0 means the item has no such layer, and the columns
+    // are dropped from the right where they would all be 0. Resolved here so
+    // a row carries real picture ids and drawRow needs to know none of this.
+    var pal = (blob && blob.p) || [];
+    function palDid(n) { return n ? (pal[n - 1] || 0) : 0; }
     nameOf(0);                       // force BY_ID to exist before we test it
     var add = [];
     for (var i = 0; i < rows.length; i++) {
@@ -7719,6 +7969,13 @@ function loadItemIndex() {
         ? { i: row[0], n: row[1], t: "i", c: cats[row[2]] || "Item",
             k: row[3] || 0, h: 0 }
         : row;
+      if (row && row.length > 4 && row.i === undefined) {
+        // [background, underlay, shadow, overlay], kept only where there is
+        // one - most rows are items with no layers to speak of and skills,
+        // effects and traits never have any.
+        var kl = [palDid(row[4]), palDid(row[5]), palDid(row[6]), palDid(row[7])];
+        if (kl[0] || kl[1] || kl[2] || kl[3]) e.kl = kl;
+      }
       // an id index.json already names is that record, not an item
       if (BY_ID && BY_ID[e.i]) continue;
       e.f = fold(e.n);

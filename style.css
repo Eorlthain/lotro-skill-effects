@@ -81,6 +81,7 @@
   --tip-mods: #00e500;
   --tip-mods-harm: #ff0000;
   --prose-amt: #cccc7f;
+  --tip-disenchant: #C0A8FF;
 
   /* trait tooltip */
   --tt-flavour: #c3b51f;
@@ -1900,4 +1901,199 @@ body.legalpage {
 
 .tip .tipbody.cost .tipeff.gated {
   margin-top: 6px;
+}
+
+/* The armour value is not a plain fact like the item level: the client gives
+   it the same pale yellow a skill's own description takes. Delver does the
+   same; this site had it white with everything else. */
+.tip.item .tl.iarmour,
+.tip.item .tl.iarmour .tv {
+  color: var(--tip-desc);
+}
+
+/* A requirement the reader either meets or does not - class, glory rank,
+   monster play - reads red, the way the client prints it. The level rows are
+   deliberately not in here: the client leaves those white. */
+.tip.item .tl.ireq,
+.tip.item .tl.ireq .tv,
+.tip.item .tl.ireq .tk {
+  color: var(--tip-mods-harm);
+}
+
+/* ---------- coin and essence-slot pictures ----------
+   Both come from data/uiIcons.json, which the client keeps on named UI
+   resources rather than on any item. */
+
+/* "33 [silver] 6 [copper]" - the number then its coin, the way the client
+   writes a price. */
+.tip.item .worthrun {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.tip.item .coin {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  white-space: nowrap;
+}
+
+/* Drawn at the size the client draws it: the money display puts a 27x21 glyph
+   in a 32x22 element at 31x20. Height drives it and the width follows, so the
+   coin stays round instead of being squashed into a square box. */
+.tip.item .coin img {
+  height: 20px;
+  width: auto;
+  display: block;
+}
+
+/* An essence slot is a background that says which slot it is and an overlay
+   frame on top, so the two are stacked rather than set side by side. */
+/* Also the client's own size - a socket list entry in the examination layout
+   is 32x32, and the art is 32px square. */
+.socketicon {
+  position: relative;
+  display: inline-block;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  vertical-align: -9px;
+  margin-right: 6px;
+}
+
+.socketicon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.tip.item .tl.isocket {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+}
+
+/* ---------- layered item icons ----------
+   The client composites an item's icon from up to five pictures. iconstack is
+   the box they are stacked in; it takes the size the single <img> used to get
+   in each place it appears, so the header rules above still drive the size. */
+.iconstack {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  overflow: hidden;
+}
+
+.iconstack img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  /* A layer must stay transparent whatever the surrounding rules do. `.head
+     img` gives an item icon a grey plate and a radius, and it matches these
+     images too - so every layer carried an opaque plate and the topmost one
+     hid the quality frame under it. That is why the page header drew the same
+     three pictures as the tooltip and showed none of the stack. */
+  background: none;
+  border-radius: 0;
+}
+
+/* No backing square and no rounding: the composited icon already carries its
+   own frame, and .head img's grey plate sat behind it as a second, different
+   border - so the page header and the tooltip header drew the same art and did
+   not look the same. */
+.head .iconstack {
+  width: 48px;
+  height: 48px;
+}
+
+.tiphead .iconstack {
+  width: 32px;
+  height: 32px;
+  border-radius: 2px;
+}
+
+/* The disenchant block: its own heading colour, then the currency's icon at
+   the same size as the item's own, beside the amount and the name. */
+.tip.item .tl.idishead,
+.tip.item .tl.idishead .tv {
+  color: var(--tip-disenchant);
+}
+
+.tip.item .tl.idis {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+/* the size the panel's own icon takes, so the two read as the same kind of
+   thing - see .tiphead .iconstack */
+.tip.item .tl.idis .iconstack {
+  width: 32px;
+  height: 32px;
+}
+
+/* The name takes the title face and its own quality colour, so it needs the
+   line height a title gets rather than the 12px body's. */
+.tip.item .tl.idis .tipname {
+  font-size: 15px;
+  line-height: 1.15;
+}
+
+/* A result row's icon. Items draw the full stack here and so carry their own
+   quality frame; everything else still takes the plain `.row img` path with
+   its grey plate, because a skill or an effect icon has no frame of its own. */
+.row .iconstack {
+  width: 26px;
+  height: 26px;
+}
+
+/* ---------- the set block on an item's own tooltip ----------
+   Set name, the level it caps at, the pieces, then each piece count and what
+   it grants. */
+.tip.item .tipset {
+  margin-top: 6px;
+}
+
+.tip.item .tipsetname {
+  font-size: 12px;
+  color: var(--tip-name);
+}
+
+.tip.item .tipsetcap {
+  color: var(--tip-stat);
+  margin-left: 5px;
+}
+
+/* The pieces read as a list you scan, so they sit back from the set's name and
+   stay in the quiet grey the client gives a piece you are not wearing. */
+.tip.item .tipsetpiece {
+  font-size: 12px;
+  color: var(--tip-stat);
+  padding-left: 9px;
+}
+
+/* The one you are looking at. The client brightens the pieces you have on;
+   this is the only piece a page can be sure about. */
+.tip.item .tipsetpiece.own {
+  color: var(--tip-desc);
+}
+
+.tip.item .tipsetcount {
+  margin-top: 5px;
+}
+
+.tip.item .tipset .setstat {
+  padding-left: 9px;
+}
+
+.tip.item .tipset .tipeff {
+  padding-left: 9px;
 }
