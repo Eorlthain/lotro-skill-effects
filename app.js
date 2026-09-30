@@ -1799,7 +1799,16 @@ function renderSkill(s, progs, D, MS, ET) {
   }
 
   if (D && MS) section(host, "Effects with no chance of their own", chanceBlock(s, D, MS));
-  if (D) section(host, "Effects that need a trait", conditionalBlock(s, D));
+  if (D) {
+    section(host, "Effects that need a trait", conditionalBlock(s, D, "trait"));
+    section(host, "Effects that need a set bonus", conditionalBlock(s, D, "set"));
+    // Neither a trait nor a set supplies these. The row still says which
+    // effect sets the property, which is the only honest answer available -
+    // 220 rows on 179 skills, and hiding them would be worse than a vague
+    // heading.
+    section(host, "Effects that need something else",
+            conditionalBlock(s, D, "other"));
+  }
   if (D) section(host, "Procs on this skill", procBlock(s, D));
   if (D && MS) section(host, "Modifiers", modsBlock(s, D, MS));
 
@@ -3289,10 +3298,31 @@ function chanceBlock(s, D, MS) {
   return wrap;
 }
 
-function conditionalBlock(s, D) {
-  var rows = s.conditionalEffects || [];
-  if (!rows.length) return null;
+/* Which rows belong in which section. A conditional effect waits on a
+   property, and what SETS that property is the thing a reader has to go and
+   get: a trait they slot, or a set bonus they assemble. Those are different
+   errands, and filing them together under "Effects that need a trait" was
+   simply wrong for 644 of the 4,112 rows across 470 skills - three of the four
+   on Guided by the Stars are set bonuses.
+
+   Five rows are gated by both and appear in both sections, because either one
+   genuinely unlocks them. 220 belong to neither and keep a section of their
+   own rather than being hidden or mislabelled. */
+function conditionalGate(r, D, mine) {
+  var traits = (r.traits || []).filter(function (id) { return D.traits[String(id)]; });
+  return { trait: traits.length > 0, set: (r.sets || []).length > 0 };
+}
+
+function conditionalBlock(s, D, want) {
+  var all = s.conditionalEffects || [];
   var mine = ownerClasses(s);
+  var rows = all.filter(function (r) {
+    var g = conditionalGate(r, D, mine);
+    return want === "trait" ? g.trait
+         : want === "set" ? g.set
+         : (!g.trait && !g.set);
+  });
+  if (!rows.length) return null;
   var t = el("table", "t");
   t.innerHTML = "<tr><th>Applies</th><th>Effect</th><th>Only when</th></tr>";
   rows.forEach(function (r) {
@@ -3315,7 +3345,20 @@ function conditionalBlock(s, D) {
       // nothing survived the scope - better the whole list than an empty cell
       traits = (r.traits || []).filter(function (id) { return D.traits[String(id)]; });
     }
-    if (traits.length) {
+    if (want === "set" && (r.sets || []).length) {
+      // "4 pieces of Umbari Armour of the Stars" - the piece count is the
+      // whole answer, since that is what a reader has to reach.
+      td2.appendChild(el("span", "muted", "wearing "));
+      td2.appendChild(linkRun(r.sets.map(function (row) {
+        return function () {
+          var st = SETS && SETS[String(row[0])];
+          var a = el("a", null, (st ? st.name : "set " + row[0]) +
+                                (row[1] ? " (" + row[1] + ")" : ""));
+          a.href = urlFor("set/" + row[0]);
+          return a;
+        };
+      }), 3, 0));
+    } else if (traits.length) {
       td2.appendChild(el("span", "muted", "traited "));
       td2.appendChild(linkRun(traits.map(function (id) {
         return function () {
