@@ -1,9 +1,5 @@
-/* LOTRO skill and effect database */
 
-/* Cinzel is served from this site, not from Google Fonts: loading it from
-   fonts.googleapis.com handed every visitor's IP address to Google before the
-   page had drawn anything. SIL Open Font License - see fonts/OFL.txt. Only the
-   tooltip name uses it, at weight 400. */
+
 @font-face {
   font-family: "Cinzel";
   font-style: normal;
@@ -26,23 +22,19 @@
 }
 
 :root {
-  /* page - a neutral near-black, so the only warm colour on screen is the
-     accent and the in-game panels */
+
   --bg: #111213;
   --surface: #161719;
   --surface-2: #1c1d20;
   --surface-3: #232428;
 
-  /* lines */
   --border: #26282b;
   --border-strong: #34363a;
 
-  /* text */
   --ink: #e4e2dd;
   --ink-2: #c2c0ba;
   --ink-3: #9d9b95;
 
-  /* one accent */
   --accent: #c8a55f;
   --accent-dim: #7d6a45;
   --link: #d2b67c;
@@ -57,13 +49,11 @@
   --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 
-  /* item rarity */
   --rar-uncommon: #e8e14a;
   --rar-rare: #d07fe0;
   --rar-incomparable: #00ffff;
   --rar-legendary: #ffa500;
 
-  /* tooltip - the client's own colours, not part of the site palette */
   --tip-bg: #080c13;
   --tip-bg-mid: #0e1522;
   --tip-bg-low: #162137;
@@ -83,7 +73,6 @@
   --prose-amt: #cccc7f;
   --tip-disenchant: #C0A8FF;
 
-  /* trait tooltip */
   --tt-flavour: #c3b51f;
   --tt-class: #2ab51f;
   --tt-rank: #009900;
@@ -129,15 +118,11 @@ a:hover {
   background: rgba(200, 165, 95, .28);
 }
 
-/* thin, quiet scrollbars on the two panes */
 .results,
 .detail {
   scrollbar-width: thin;
   scrollbar-color: var(--border-strong) transparent;
 }
-
-
-/* ---------- layout ---------- */
 
 .app {
   display: grid;
@@ -238,8 +223,6 @@ a:hover {
   box-shadow: 0 0 0 3px rgba(200, 165, 95, .12);
 }
 
-/* The kind filters read as a row of words, not a row of buttons: the ones
-   that are on are in full ink, the ones that are off drop back. */
 .filters {
   display: flex;
   gap: 2px 12px;
@@ -266,8 +249,6 @@ a:hover {
   color: var(--ink);
 }
 
-/* off reads as struck from the search, so the difference does not rest on
-   brightness alone */
 .filters button:not(.on) {
   color: #7c7a75;
   text-decoration: line-through;
@@ -368,7 +349,6 @@ a:hover {
   white-space: nowrap;
 }
 
-/* Privacy and notice links at the foot of the sidebar. */
 .sitefoot {
   flex: none;
   display: flex;
@@ -387,9 +367,6 @@ a:hover {
 .sitefoot a:hover {
   color: var(--ink);
 }
-
-
-/* ---------- detail ---------- */
 
 .detail {
   overflow-y: auto;
@@ -444,8 +421,6 @@ a:hover {
   margin-top: 3px;
 }
 
-/* Tags are a line of plain words under the title, separated by dots - not a
-   row of boxes. The kind and the helpful/harmful flag keep a colour. */
 .tags {
   display: flex;
   flex-wrap: wrap;
@@ -498,11 +473,6 @@ h3.sec {
   border-bottom: 1px solid var(--border);
 }
 
-
-/* ---------- stats ---------- */
-
-/* Key figures sit in a plain row, label over value, divided by hairlines
-   rather than drawn as cards. */
 .stats {
   display: flex;
   flex-wrap: wrap;
@@ -545,9 +515,6 @@ h3.sec {
   color: var(--ink-2);
 }
 
-
-/* ---------- tables ---------- */
-
 table.t {
   border-collapse: collapse;
   width: 100%;
@@ -577,9 +544,6 @@ table.t tbody tr:hover {
 table.t td.num {
   font-variant-numeric: tabular-nums;
 }
-
-
-/* ---------- links ---------- */
 
 ul.links {
   list-style: none;
@@ -639,9 +603,6 @@ a.ess {
   border-bottom: 1px dotted var(--border-strong);
 }
 
-
-/* ---------- charts ---------- */
-
 .chart {
   margin: 6px 0 4px;
 }
@@ -690,9 +651,6 @@ a.ess {
   font: 11.5px var(--sans);
 }
 
-
-/* ---------- raw data ---------- */
-
 details.raw {
   margin-top: 10px;
 }
@@ -728,9 +686,6 @@ code.pn {
   color: var(--ink-3);
 }
 
-
-/* ---------- navigation ---------- */
-
 .navlinks {
   display: flex;
   gap: 16px;
@@ -748,11 +703,6 @@ code.pn {
   text-decoration: none;
 }
 
-
-/* ---------- classes ---------- */
-
-/* The class list is a two- or three-column list of rows, not a wall of
-   tiles. */
 .stats:has(> a.classcard) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -823,17 +773,11 @@ table.t img.inline {
   background: var(--surface-2);
 }
 
-
-/* ---------- effects and properties ---------- */
-
 .tip .tipeffwho {
   font-size: 11.5px;
   color: var(--tip-time);
 }
 
-/* "Effects applied to enemies within 10 metres:" introduces a debuff, so it
-   reads in the same red as the numbers under it. The friendly version keeps
-   the green above - the line's colour says which way the effect points. */
 .tip .tipeff.harm .tipeffwho {
   color: var(--tip-mods-harm);
 }
@@ -886,8 +830,6 @@ a.eff {
   margin-left: 22px;
 }
 
-/* A grouped skill list sits under its class heading the same distance in as a
-   reader run does, so the two pages indent alike. */
 .propgroup ul.links {
   margin-left: 22px;
 }
@@ -895,9 +837,6 @@ a.eff {
 table.t td .via {
   margin-left: 8px;
 }
-
-
-/* ---------- item sets ---------- */
 
 .setbonus {
   margin: 8px 0 0 14px;
@@ -911,9 +850,6 @@ table.t td .via {
   color: var(--ink-3);
   margin-bottom: 2px;
 }
-
-
-/* ---------- item rarity ---------- */
 
 td.rar-uncommon {
   color: var(--rar-uncommon);
@@ -951,9 +887,6 @@ td[class^="rar-"] {
   color: var(--rar-legendary);
 }
 
-
-/* ---------- item details ---------- */
-
 ul.links li.twoline {
   align-items: flex-start;
 }
@@ -966,9 +899,6 @@ ul.links li.twoline {
 .tag.slot {
   color: var(--ink-2);
 }
-
-
-/* ---------- gambits ---------- */
 
 .gambit {
   display: flex;
@@ -1002,9 +932,6 @@ ul.links li.twoline {
   display: block;
 }
 
-
-/* ---------- skill and effect tooltips ---------- */
-
 .tip.harm .tipstat,
 .tipeff.harm .tipstat,
 .tip.harm .tipeffdesc,
@@ -1016,11 +943,6 @@ ul.links li.twoline {
   color: var(--tip-mods);
 }
 
-/* An effect's own sentence - "Forced Attack" - is flavour, not a value, so it
-   reads in the panel's description colour whether the effect harms or heals.
-   It used to share .tipeffdesc and so came out in the red kept for what a
-   harmful effect does to a target, which made a plain label look like damage.
-   Deliberately NOT under a .tipeff.harm/.heal rule: that is the point. */
 .tipeff .tipeffflavour {
   font-size: 12px;
   color: var(--tip-desc);
@@ -1029,7 +951,7 @@ ul.links li.twoline {
 .tipeff.heal .tipstat,
 .tipeff.heal .tipeffdesc,
 .tipeff.heal .tl {
-  color: var(--tip-cost);	
+  color: var(--tip-cost);
 }
 
 .tipeff.heal .tipstat .tv,
@@ -1250,9 +1172,6 @@ ul.links li.twoline {
   font-size: 11px;
 }
 
-
-/* ---------- generated effect description ---------- */
-
 .does {
   line-height: 1.6;
   max-width: 74ch;
@@ -1271,9 +1190,6 @@ ul.links li.twoline {
 .does .summon {
   color: var(--tip-name);
 }
-
-
-/* ---------- focus ---------- */
 
 :focus-visible {
   outline: 2px solid var(--accent-dim);
@@ -1294,9 +1210,6 @@ ul.links li.twoline {
   clip-path: inset(50%);
   white-space: nowrap;
 }
-
-
-/* ---------- character ---------- */
 
 .prefs {
   margin-top: 10px;
@@ -1369,9 +1282,6 @@ ul.links li.twoline {
   font: 600 12.5px var(--sans);
   font-variant-numeric: tabular-nums;
 }
-
-
-/* ---------- trait tree ---------- */
 
 .ttree {
   display: grid;
@@ -1466,8 +1376,6 @@ a.tcell .tg {
   color: var(--ink);
 }
 
-/* ---------- property pages ---------- */
-
 a.pn {
   font: 12px var(--mono);
   color: var(--info);
@@ -1487,9 +1395,6 @@ a.pn:hover {
   line-height: 1.9;
   max-width: 80ch;
 }
-
-
-/* ---------- trait panel ---------- */
 
 .tip.trait {
   max-width: 300px;
@@ -1589,9 +1494,6 @@ a.pn:hover {
   padding-left: 8px;
 }
 
-
-/* ---------- why a combo is open ---------- */
-
 .combowhy {
   margin-top: 2px;
   font-size: 11.5px;
@@ -1599,8 +1501,6 @@ a.pn:hover {
   color: var(--ink-2);
 }
 
-/* the flag is the condition, so it carries the weight; the words around it
-   are scaffolding and stay quiet */
 .combowhy .comboflag b {
   color: var(--ink);
   font-weight: 600;
@@ -1609,8 +1509,6 @@ a.pn:hover {
 .combowhy .muted {
   color: var(--ink-3);
 }
-
-/* ---------- stacking ---------- */
 
 a.stacklink .stackcount {
   color: var(--ink-3);
@@ -1629,9 +1527,7 @@ a.stacklink:hover .stackcount {
 .stat .v .via {
   margin-left: 8px;
 }
-/* The icon for one end of a two-ended class resource - the red rune for
-   Battle attunement, the pale one for Steady. It sits on the baseline of the
-   line it belongs to, the way the client draws it. */
+
 .tip .tl.pip .pipicon {
   width: 16px;
   height: 16px;
@@ -1644,11 +1540,7 @@ a.stacklink:hover .stackcount {
   margin-right: 0;
   margin-left: 5px;
 }
-/* The panel that follows the pointer. It IS the record's own tooltip - the
-   same .tip markup the page builds - so all this adds is where it sits.
-   pointer-events must stay off: the box lands under the pointer, and a box
-   that took the mouse would count as leaving the link it belongs to and
-   close itself the instant it appeared. */
+
 #hovertip {
   position: fixed;
   left: 0;
@@ -1662,70 +1554,34 @@ a.stacklink:hover .stackcount {
 
 #hovertip[hidden] { display: none; }
 
-/* Taller than the window: pinned to the top and clipped. The fade is the only
-   thing saying there is more, since nothing here can be scrolled - the page
-   itself is one click away. */
 #hovertip.cut {
   -webkit-mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
   mask-image: linear-gradient(180deg, #000 88%, transparent 100%);
 }
 
-/* A vital line is built as <span class="tv"> so its parts can be styled
-   apart, and `.tip .tv` paints that span the modifier grey. The heal and harm
-   twins above already override it, but the NEUTRAL case had nothing - so a
-   power restore in an ordinary block, Song of the Hammerhand's "+269 Power"
-   on expiry, read grey inside a block of green. Inherit the block's own
-   colour; heal and harm still win on specificity. */
 .tipeff .tipstat .tv,
 .tip .tl.vital .tv {
   color: inherit;
 }
 
-/* "Applied on expiration:" is what happens when the effect runs out, and the
-   client writes that red whatever the effect above it was - unlike the other
-   group headings, which take the duration green. */
 .tip .tipeffwho.expiry {
   color: var(--tip-mods-harm);
 }
 
-/* A payload line - what a carrier hands on, what a reactive effect throws
-   back - reads in the colour of the effect that produced it rather than of
-   the block it landed in. A reactive block holds the friendly answer and the
-   debuff together, so "3s Stun" has to be red inside a green block. Tagged by
-   tagPayload on the line's own link, which is why this is not scoped to
-   .tipeff: the effect's own panel puts these straight into a .tipbody. */
 .tip .tipefflink.harm .tipstat,
 .tip .tipefflink.harm .tipstat .tv {
   color: var(--tip-mods-harm);
 }
 
-/* A reactive effect's headings - "On any damage:", "25% chance to Reflect
-   effect:" - belong to the buff rather than labelling it, so they take the
-   same green and the same size as the effect lines under them, not the dimmer
-   duration green the carrier groups use for "On application:" and the like. */
 .tip .tipeffwho.react {
   font-size: 12px;
   color: var(--tip-mods);
 }
 
-/* The neutral vital row on an effect's own page. `.tip .tl` paints every row
-   the modifier grey and only the heal and harm twins overrode it, so a POWER
-   restore - which is neither, isHeal being about morale - read grey where the
-   skill panel showed it in the effect green. Power of Knowledge (1879369512)
-   is the case. The twins are 0,4,0 and still win. */
 .tip .tl.vital {
   color: var(--tip-mods);
 }
 
-/* An aura's heading, and every heading under it. "Aura - affects Fellowship
-   members within 20 metres:" introduces the lines below it, so it takes their
-   size - but the colour is decided by the SECTION it sits in, not by the aura.
-
-   Outside "On Use:" it stays the dim duration green every other group heading
-   uses. Inside the On Use section the whole block is effect content and reads
-   in the effect green, headings included - "On Use:" itself excepted, since
-   that one is the section marker and belongs with Cooldown. Rousing Words
-   (1879109284) is the case that shows both at once. */
 .tip .tipeffwho.aura,
 .tip .tipeff.inaura .tipeffwho {
   font-size: 12px;
@@ -1739,12 +1595,6 @@ a.stacklink:hover .stackcount {
   color: var(--tip-time);
 }
 
-/* ---------- tooltip text size ----------
-   Every font on the skill, effect and trait panels is one pixel larger than
-   the base rules above give it. Scoped under .tip so the same classes used on
-   the rest of the page (a stat line on a set bonus, a gambit row) keep their
-   size. The 12.5px rule comes first: the later .react / .aura headings are
-   more specific in intent and carry their own 13px. */
 .tip { font-size: 15px; }
 .tip .tipname { font-size: 19px; }
 .tip .tipsub { font-size: 12px; }
@@ -1767,16 +1617,10 @@ a.stacklink:hover .stackcount {
 .tip .tipeffwho.aura,
 .tip .tipeff.inaura .tipeffwho { font-size: 13px; }
 
-/* A carrier heading nested inside another block ("Every 0.5 seconds:" then
-   "Effects applied to enemies within 5 metres:") reads in the colour of the
-   carrier it introduces when that carrier is aimed at enemies, even inside a
-   friendly block. Relentless Maul is the case. */
 .tip .tipeff .tipeffwho.harm {
   color: var(--tip-mods-harm);
 }
 
-/* ---------- the privacy page ----------
-   A plain reading page, outside the app's two-pane layout. */
 body.legalpage {
   display: block;
   height: auto;
@@ -1825,11 +1669,6 @@ body.legalpage {
   font-size: 13px;
 }
 
-/* ---------- item tooltips ----------
-   Read off in-game panels: the name takes the quality colour, the item's own
-   modifiers are the same bright green a skill panel uses for what an effect
-   gives you, everything factual is white, and the grey is kept for the lines
-   that are conditions rather than facts ("Consumed On Use"). */
 .tip.item .tipname { color: #ffffff; }
 .tip.item .tipname.rar-uncommon { color: var(--rar-uncommon); }
 .tip.item .tipname.rar-rare { color: var(--rar-rare); }
@@ -1864,14 +1703,6 @@ body.legalpage {
   color: var(--tip-time);
 }
 
-/* ---------- conditional hook effects ----------
-   A positional, critical or devastating-critical effect does not land on an
-   ordinary hit, and the client says so in colour rather than in words: the
-   heading keeps the duration green every carrier heading takes, and the lines
-   under it go magenta instead of the red a debuff or the green a buff would
-   get. Stagger's snare printed in debuff red read as something every Stagger
-   applies. Written to outrun .tipeff.harm/.heal (0,3,0) and the cost group's
-   own colour, because the block sits inside both. */
 .tip .tipeff.gated .tipstat,
 .tip .tipeff.gated .tipeffdesc,
 .tip .tipeff.gated .tl,
@@ -1885,16 +1716,11 @@ body.legalpage {
   color: var(--tt-earned);
 }
 
-/* The duration under a conditional line takes the pip yellow, not the duration
-   green - the green is spoken for by the heading directly above it, and two
-   greens in a row read as one block rather than a heading over its content. */
 .tip .tipeff.gated .tipdur,
 .tip .tipeff.gated .tipdur .tv {
   color: var(--tip-pip);
 }
 
-/* The heading itself: green, and never inheriting the harm red from a debuff
-   nested under it. */
 .tip .tipeff.gated > .tipeffwho {
   color: var(--tip-time);
 }
@@ -1903,29 +1729,17 @@ body.legalpage {
   margin-top: 6px;
 }
 
-/* The armour value is not a plain fact like the item level: the client gives
-   it the same pale yellow a skill's own description takes. Delver does the
-   same; this site had it white with everything else. */
 .tip.item .tl.iarmour,
 .tip.item .tl.iarmour .tv {
   color: var(--tip-desc);
 }
 
-/* A requirement the reader either meets or does not - class, glory rank,
-   monster play - reads red, the way the client prints it. The level rows are
-   deliberately not in here: the client leaves those white. */
 .tip.item .tl.ireq,
 .tip.item .tl.ireq .tv,
 .tip.item .tl.ireq .tk {
   color: var(--tip-mods-harm);
 }
 
-/* ---------- coin and essence-slot pictures ----------
-   Both come from data/uiIcons.json, which the client keeps on named UI
-   resources rather than on any item. */
-
-/* "33 [silver] 6 [copper]" - the number then its coin, the way the client
-   writes a price. */
 .tip.item .worthrun {
   display: inline-flex;
   align-items: center;
@@ -1939,19 +1753,12 @@ body.legalpage {
   white-space: nowrap;
 }
 
-/* Drawn at the size the client draws it: the money display puts a 27x21 glyph
-   in a 32x22 element at 31x20. Height drives it and the width follows, so the
-   coin stays round instead of being squashed into a square box. */
 .tip.item .coin img {
   height: 20px;
   width: auto;
   display: block;
 }
 
-/* An essence slot is a background that says which slot it is and an overlay
-   frame on top, so the two are stacked rather than set side by side. */
-/* Also the client's own size - a socket list entry in the examination layout
-   is 32x32, and the art is 32px square. */
 .socketicon {
   position: relative;
   display: inline-block;
@@ -1977,10 +1784,6 @@ body.legalpage {
   min-height: 30px;
 }
 
-/* ---------- layered item icons ----------
-   The client composites an item's icon from up to five pictures. iconstack is
-   the box they are stacked in; it takes the size the single <img> used to get
-   in each place it appears, so the header rules above still drive the size. */
 .iconstack {
   position: relative;
   display: inline-block;
@@ -1995,19 +1798,11 @@ body.legalpage {
   height: 100%;
   display: block;
   object-fit: contain;
-  /* A layer must stay transparent whatever the surrounding rules do. `.head
-     img` gives an item icon a grey plate and a radius, and it matches these
-     images too - so every layer carried an opaque plate and the topmost one
-     hid the quality frame under it. That is why the page header drew the same
-     three pictures as the tooltip and showed none of the stack. */
+
   background: none;
   border-radius: 0;
 }
 
-/* No backing square and no rounding: the composited icon already carries its
-   own frame, and .head img's grey plate sat behind it as a second, different
-   border - so the page header and the tooltip header drew the same art and did
-   not look the same. */
 .head .iconstack {
   width: 48px;
   height: 48px;
@@ -2019,8 +1814,6 @@ body.legalpage {
   border-radius: 2px;
 }
 
-/* The disenchant block: its own heading colour, then the currency's icon at
-   the same size as the item's own, beside the amount and the name. */
 .tip.item .tl.idishead,
 .tip.item .tl.idishead .tv {
   color: var(--tip-disenchant);
@@ -2033,31 +1826,21 @@ body.legalpage {
   min-height: 34px;
 }
 
-/* the size the panel's own icon takes, so the two read as the same kind of
-   thing - see .tiphead .iconstack */
 .tip.item .tl.idis .iconstack {
   width: 32px;
   height: 32px;
 }
 
-/* The name takes the title face and its own quality colour, so it needs the
-   line height a title gets rather than the 12px body's. */
 .tip.item .tl.idis .tipname {
   font-size: 15px;
   line-height: 1.15;
 }
 
-/* A result row's icon. Items draw the full stack here and so carry their own
-   quality frame; everything else still takes the plain `.row img` path with
-   its grey plate, because a skill or an effect icon has no frame of its own. */
 .row .iconstack {
   width: 26px;
   height: 26px;
 }
 
-/* ---------- the set block on an item's own tooltip ----------
-   Set name, the level it caps at, the pieces, then each piece count and what
-   it grants. */
 .tip.item .tipset {
   margin-top: 6px;
 }
@@ -2072,16 +1855,12 @@ body.legalpage {
   margin-left: 5px;
 }
 
-/* The pieces read as a list you scan, so they sit back from the set's name and
-   stay in the quiet grey the client gives a piece you are not wearing. */
 .tip.item .tipsetpiece {
   font-size: 12px;
   color: var(--tip-stat);
   padding-left: 9px;
 }
 
-/* The one you are looking at. The client brightens the pieces you have on;
-   this is the only piece a page can be sure about. */
 .tip.item .tipsetpiece.own {
   color: var(--tip-desc);
 }
